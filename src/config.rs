@@ -46,10 +46,14 @@ impl Config {
             .await
             .map_err(|e| format!("无法读取配置文件: {}", e))?;
             
-        let config: Config = toml::from_str(&content)
+        let mut config: Config = toml::from_str(&content)
             .map_err(|e| format!("无法解析配置文件: {}", e))?;
 
         Self::verify_wg_key(&config.interface.private_key)?;
+
+        if config.hopping.concurrent_tests == 0 {
+            config.hopping.concurrent_tests = 1;
+        }
 
         Ok(config)
     }
