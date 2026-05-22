@@ -4,11 +4,16 @@ use std::net::SocketAddr;
 use std::time::SystemTime;
 use wireguard_control::{Backend, Device, DeviceUpdate, InterfaceName, Key, PeerConfigBuilder};
 
+// Hack
+fn backend() -> Backend {
+    Backend::default()
+}
+
 pub struct WgManager;
 
 impl WgManager {
     pub fn check_kernel_support() -> io::Result<()> {
-        Device::list(Backend::Kernel).map(|_| ()).map_err(|e| {
+        Device::list(backend()).map(|_| ()).map_err(|e| {
             Logger::fatal("此内核不支持 WireGuard");
             io::Error::new(io::ErrorKind::Other, e)
         })
@@ -27,7 +32,7 @@ impl WgManager {
                 io::Error::new(io::ErrorKind::InvalidInput, e)
             })?;
 
-            match Device::get(&iface, Backend::Kernel) {
+            match Device::get(&iface, backend()) {
                 Ok(_) => continue,
                 Err(e) if e.kind() == io::ErrorKind::NotFound => {
                     Logger::info(&format!("已选择接口: {name}"));
@@ -64,7 +69,7 @@ impl WgManager {
             None => update.randomize_listen_port(),
         };
 
-        update.apply(iface, Backend::Kernel).map_err(|e| {
+        update.apply(iface, backend()).map_err(|e| {
             Logger::fatal(&format!("无法应用 WireGuard 配置: {e}"));
             io::Error::new(io::ErrorKind::Other, e)
         })?;
@@ -93,7 +98,7 @@ impl WgManager {
         DeviceUpdate::new()
             .replace_peers()
             .add_peer(peer)
-            .apply(iface, Backend::Kernel)
+            .apply(iface, backend())
             .map_err(|e| {
                 Logger::fatal(&format!("无法设置对端: {e}"));
                 io::Error::new(io::ErrorKind::Other, e)
@@ -117,7 +122,7 @@ impl WgManager {
 
         DeviceUpdate::new()
             .add_peer(peer)
-            .apply(iface, Backend::Kernel)
+            .apply(iface, backend())
             .map_err(|e| {
                 Logger::error(&format!("无法更新端点: {e}"));
                 io::Error::new(io::ErrorKind::Other, e)
@@ -127,7 +132,7 @@ impl WgManager {
     }
 
     pub fn get_stats(iface: &InterfaceName) -> io::Result<DeviceStats> {
-        let device = Device::get(iface, Backend::Kernel).map_err(|e| {
+        let device = Device::get(iface, backend()).map_err(|e| {
             Logger::error(&format!("无法读取统计信息: {e}"));
             io::Error::new(io::ErrorKind::Other, e)
         })?;
