@@ -17,10 +17,8 @@ fn main() {
                 .enable_all().build().expect("无法初始化运行时");
             rt.block_on(async {
                 crate::state::logger::Logger::init(LOG_FILE);
-                if let Err(e) = crate::config::Config::ensure_exists(config_path).await {
-                    crate::state::logger::Logger::fatal(&format!("创建默认配置失败: {e}"));
-                    return;
-                }
+                let _ = crate::config::Config::ensure_exists(config_path).await;
+                crate::daemon::runner::init(config_path).await;
             });
         }
 

@@ -21,6 +21,9 @@ pub struct Logger;
 impl Logger {
     pub fn init(log_path: &'static str) {
         let path = Path::new(log_path);
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
         let _ = std::fs::write(path, "");
         GLOBAL_LOG
             .set(LoggerInner { state: RwLock::new(LogState::default()), file: path })
