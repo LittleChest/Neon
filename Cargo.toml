@@ -13,6 +13,7 @@ futures = "0.3"
 ipnet = { version = "2.12.0", features = ["serde"] }
 wireguard-control = "1.7.1"
 rustix = { version = "1.1.4", features = ["fs", "mount"] }
+boringtun = "0.7.1"
 base64 = "0.22.1"
 
 [profile.release]
