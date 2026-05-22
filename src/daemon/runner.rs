@@ -12,13 +12,13 @@ use std::time::Duration;
 use tokio::time;
 use wireguard_control::InterfaceName;
 
-const WARP_PEER_KEY: &str = "bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo=";
-const WARP_IP_BASE: [u8; 4] = [162, 159, 193, 1];
-const WARP_IP_COUNT: u8 = 10;
+pub(crate) const WARP_PEER_KEY: &str = "bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo=";
+pub(crate) const WARP_IP_BASE: [u8; 4] = [162, 159, 193, 1];
+pub(crate) const WARP_IP_COUNT: u8 = 10;
 const FWMARK: u32 = 0x20000;
 const WARP_TABLE: u32 = 0x20000;
 
-const WARP_PORTS: &[u16] = &[
+pub(crate) const WARP_PORTS: &[u16] = &[
     500, 854, 859, 864, 878, 880, 890, 891, 894, 903, 908, 928, 934, 939, 942, 943, 945, 946,
     955, 968, 987, 988, 1002, 1010, 1014, 1018, 1070, 1074, 1180, 1387, 1701, 1843, 2371, 2408,
     2506, 3138, 3476, 3581, 3854, 4177, 4198, 4233, 4500, 5279, 5956, 7103, 7152, 7156, 7281,

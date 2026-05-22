@@ -41,6 +41,35 @@ fn main() {
             }
         }
 
+        Some("test") => {
+            let config_path = args.get(2).map(|s| s.as_str()).unwrap_or("/data/adb/warp/config.toml");
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all().build().expect("无法初始化运行时");
+            rt.block_on(async {
+                let _ = crate::config::Config::ensure_exists(config_path).await;
+                match crate::config::Config::load_and_verify(config_path).await {
+                    Ok(config) => {
+                        use crate::daemon::runner::{WARP_PORTS, WARP_IP_BASE, WARP_IP_COUNT, WARP_PEER_KEY};
+                        let pk = match crate::daemon::hopping::decode_b64_key(&config.interface.private_key) {
+                            Ok(k) => k,
+                            Err(e) => { eprintln!("私钥无效: {e}"); return; }
+                        };
+                        let pubk = match crate::daemon::hopping::decode_b64_key(WARP_PEER_KEY) {
+                            Ok(k) => k,
+                            Err(e) => { eprintln!("公钥无效: {e}"); return; }
+                        };
+                        let engine = crate::daemon::hopping::HoppingEngine::new(
+                            pk, pubk, None, std::time::Duration::from_secs(5),
+                        );
+                        crate::daemon::hopping::run_test(
+                            &engine, WARP_PORTS, &WARP_IP_BASE, WARP_IP_COUNT,
+                        ).await;
+                    }
+                    Err(e) => eprintln!("配置加载失败: {e}"),
+                }
+            });
+        }
+
         _ => {
             let config_path = args.get(1).map(|s| s.as_str()).unwrap_or("/data/adb/warp/config.toml");
             let rt = tokio::runtime::Builder::new_current_thread()
