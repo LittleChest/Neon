@@ -41,6 +41,19 @@ pub struct InfoConfig {
 }
 
 impl Config {
+    pub async fn ensure_exists<P: AsRef<Path>>(path: P) -> Result<(), String> {
+        let p = path.as_ref();
+        if tokio::fs::metadata(p).await.is_ok() {
+            return Ok(());
+        }
+        let default = include_str!("../config.default.toml");
+        if let Some(parent) = p.parent() {
+            tokio::fs::create_dir_all(parent).await.map_err(|e| format!("无法创建配置目录: {e}"))?;
+        }
+        tokio::fs::write(p, default).await.map_err(|e| format!("无法写入默认配置: {e}"))?;
+        Ok(())
+    }
+
     pub async fn load_and_verify<P: AsRef<Path>>(path: P) -> Result<Self, String> {
         let content = tokio::fs::read_to_string(path)
             .await
