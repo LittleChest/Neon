@@ -7,6 +7,9 @@ edition = "2024"
 tokio = { version = "1.52.3", features = ["rt", "net", "time", "macros", "fs", "sync"] }
 serde = { version = "1.0.228", features = ["derive"] }
 toml = "1.1.2+spec-1.1.0"
+rtnetlink = "0.21.0"
+netlink-packet-route = "0.30.0"
+futures = "0.3"
 ipnet = { version = "2.12.0", features = ["serde"] }
 rustix = { version = "1.1.4", features = ["fs", "mount"] }
 base64 = "0.22.1"
