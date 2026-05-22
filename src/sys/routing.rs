@@ -45,25 +45,29 @@ impl RoutingManager {
         table: u32,
         priority: u32,
     ) -> io::Result<()> {
-        let mut req = self.handle.rule().add();
-        req.message_mut()
-            .attributes
-            .push(RuleAttribute::FwMark(mark));
-        req.message_mut()
-            .attributes
-            .push(RuleAttribute::FwMask(mask));
-        req.message_mut()
-            .attributes
-            .push(RuleAttribute::Iifname("lo".to_string()));
-        req = req
-            .table_id(table)
-            .action(RuleAction::ToTable)
-            .priority(priority);
+        for family in [AddressFamily::Inet, AddressFamily::Inet6] {
+            let mut req = self.handle.rule().add();
+            req.message_mut().header.family = family;
+            req.message_mut()
+                .attributes
+                .push(RuleAttribute::FwMark(mark));
+            req.message_mut()
+                .attributes
+                .push(RuleAttribute::FwMask(mask));
+            req.message_mut()
+                .attributes
+                .push(RuleAttribute::Iifname("lo".to_string()));
+            req = req
+                .table_id(table)
+                .action(RuleAction::ToTable)
+                .priority(priority);
 
-        req.execute().await.map_err(|e| {
-            Logger::error(&format!("无法添加 fwmark 规则 0x{mark:x}/0x{mask:x}: {e}"));
-            io::Error::new(io::ErrorKind::Other, e)
-        })
+            req.execute().await.map_err(|e| {
+                Logger::error(&format!("无法添加 fwmark 规则 0x{mark:x}/0x{mask:x}: {e}"));
+                io::Error::new(io::ErrorKind::Other, e)
+            })?;
+        }
+        Ok(())
     }
 
     // ip rule add to <cidr> goto <target> prio <priority>
@@ -115,7 +119,7 @@ impl RoutingManager {
             .push(RouteAttribute::Destination(RouteAddress::from(dest)));
         msg.header.destination_prefix_length = prefix_len;
 
-        self.handle.route().add(msg).execute().await.map_err(|e| {
+        self.handle.route().add(msg).replace().execute().await.map_err(|e| {
             Logger::error(&format!("无法添加路由 {dest}/{prefix_len} → table {table}: {e}"));
             io::Error::new(io::ErrorKind::Other, e)
         })
