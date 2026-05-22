@@ -16,7 +16,6 @@ fn main() {
             let rt = tokio::runtime::Builder::new_current_thread()
                 .enable_all().build().expect("无法初始化运行时");
             rt.block_on(async {
-                crate::state::logger::Logger::init(LOG_FILE);
                 let _ = crate::config::Config::ensure_exists(config_path).await;
                 crate::daemon::runner::init(config_path).await;
             });
@@ -47,7 +46,6 @@ fn main() {
             let rt = tokio::runtime::Builder::new_current_thread()
                 .enable_all().build().expect("tokio 运行时失败");
             rt.block_on(async {
-                crate::state::logger::Logger::init(LOG_FILE);
                 let _ = crate::config::Config::ensure_exists(config_path).await;
                 if let Some(state) = crate::daemon::runner::init(config_path).await {
                     crate::daemon::runner::run_loop(state).await;

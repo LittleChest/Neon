@@ -35,13 +35,14 @@ pub struct DaemonState {
 }
 
 pub async fn init(config_path: &str) -> Option<DaemonState> {
-    Logger::info("载入中...");
-
     let config = Config::load_and_verify(config_path).await.ok()?;
 
     let module_dir = Path::new("/data/adb/modules/WARP");
     let tmp_dir = Path::new("/dev/warp");
     MountManager::setup_magisk_env(module_dir, &[tmp_dir]).await.ok()?;
+
+    Logger::init(crate::LOG_FILE);
+    Logger::info("载入中...");
 
     WgManager::check_kernel_support().ok()?;
     let iface = WgManager::find_available_name().ok()?;
