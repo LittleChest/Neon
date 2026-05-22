@@ -11,6 +11,7 @@ rtnetlink = "0.21.0"
 netlink-packet-route = "0.30.0"
 futures = "0.3"
 ipnet = { version = "2.12.0", features = ["serde"] }
+wireguard-control = "1.7.1"
 rustix = { version = "1.1.4", features = ["fs", "mount"] }
 base64 = "0.22.1"
 
