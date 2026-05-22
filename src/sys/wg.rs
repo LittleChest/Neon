@@ -29,7 +29,9 @@ impl WgManager {
 
             match Device::get(&iface, Backend::Kernel) {
                 Ok(_) => continue,
-                Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                Err(e) if e.kind() == io::ErrorKind::NotFound
+                       || e.raw_os_error() == Some(19) =>
+                {
                     Logger::info(&format!("已选择接口: {name}"));
                     return Ok(iface);
                 }
