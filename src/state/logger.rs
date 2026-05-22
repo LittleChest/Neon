@@ -1,4 +1,6 @@
+use std::path::Path;
 use std::sync::{OnceLock, RwLock};
+const MAX_LINES: usize = 100;
 
 #[derive(Debug, Default)]
 pub struct LogState {
@@ -7,46 +9,80 @@ pub struct LogState {
     pub warning_count: usize,
 }
 
-static GLOBAL_LOG: OnceLock<RwLock<LogState>> = OnceLock::new();
+struct LoggerInner {
+    state: RwLock<LogState>,
+    file: &'static Path,
+}
+
+static GLOBAL_LOG: OnceLock<LoggerInner> = OnceLock::new();
 
 pub struct Logger;
 
 impl Logger {
-    pub fn init() {
-        GLOBAL_LOG.get_or_init(|| RwLock::new(LogState::default()));
+    pub fn init(log_path: &'static str) {
+        let path = Path::new(log_path);
+        let _ = std::fs::write(path, "");
+        GLOBAL_LOG
+            .set(LoggerInner { state: RwLock::new(LogState::default()), file: path })
+            .ok();
     }
 
-    fn get_state() -> std::sync::RwLockWriteGuard<'static, LogState> {
-        GLOBAL_LOG.get().expect("INITIALIZING").write().unwrap()
+    fn inner() -> &'static LoggerInner {
+        GLOBAL_LOG.get().expect("Logger 未初始化")
     }
 
     pub fn read_state<F, R>(f: F) -> R
     where
         F: FnOnce(&LogState) -> R,
     {
-        let state = GLOBAL_LOG.get().expect("INITIALIZING").read().unwrap();
-        f(&state)
+        f(&Self::inner().state.read().unwrap())
+    }
+
+    fn append_line(entry: &str) {
+        let path = Self::inner().file;
+        let mut lines: Vec<String> = std::fs::read_to_string(path)
+            .unwrap_or_default()
+            .lines()
+            .map(|s| s.to_string())
+            .collect();
+        lines.push(entry.to_string());
+        if lines.len() > MAX_LINES {
+            lines.drain(0..lines.len() - MAX_LINES);
+        }
+        let _ = std::fs::write(path, lines.join("\n"));
     }
 
     pub fn fatal(msg: &str) {
-        let mut state = Self::get_state();
+        let mut state = Self::inner().state.write().unwrap();
         state.fatal = Some(msg.to_string());
-        eprintln!("⛔ [致命错误] {}", msg);
+        drop(state);
+        let entry = format!("⛔ {msg}");
+        eprintln!("{entry}");
+        Self::append_line(&entry);
     }
 
     pub fn error(msg: &str) {
-        let mut state = Self::get_state();
-        state.error_count += 1;
-        eprintln!("❌ [错误] {}", msg);
+        Self::inner().state.write().unwrap().error_count += 1;
+        let entry = format!("❌ {msg}");
+        eprintln!("{entry}");
+        Self::append_line(&entry);
     }
 
     pub fn warn(msg: &str) {
-        let mut state = Self::get_state();
-        state.warning_count += 1;
-        println!("⚠️ [警告] {}", msg);
+        Self::inner().state.write().unwrap().warning_count += 1;
+        let entry = format!("⚠️ {msg}");
+        eprintln!("{entry}");
+        Self::append_line(&entry);
     }
 
     pub fn info(msg: &str) {
-        println!("ℹ️ [信息] {}", msg);
+        let entry = format!("ℹ️ {msg}");
+        eprintln!("{entry}");
+        Self::append_line(&entry);
+    }
+
+    pub fn has_issues() -> bool {
+        let state = Self::inner().state.read().unwrap();
+        state.fatal.is_some() || state.error_count > 0 || state.warning_count > 0
     }
 }
