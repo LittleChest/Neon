@@ -1,5 +1,7 @@
+use base64::{engine::general_purpose::STANDARD, Engine};
 use ipnet::IpNet;
 use serde::Deserialize;
+use std::path::Path;
 
 #[derive(Debug, Deserialize, PartialEq, Clone)]
 pub struct Config {
@@ -39,9 +41,26 @@ pub struct InfoConfig {
 }
 
 impl Config {
-    pub async fn load_from_file(path: &str) -> std::io::Result<Self> {
-        let content = tokio::fs::read_to_string(path).await?;
-        toml::from_str(&content)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))
+    pub async fn load_and_verify<P: AsRef<Path>>(path: P) -> Result<Self, String> {
+        let content = tokio::fs::read_to_string(path)
+            .await
+            .map_err(|e| format!("无法读取配置文件: {}", e))?;
+            
+        let config: Config = toml::from_str(&content)
+            .map_err(|e| format!("无法解析配置文件: {}", e))?;
+
+        Self::verify_wg_key(&config.interface.private_key)?;
+
+        Ok(config)
+    }
+
+    fn verify_wg_key(key_str: &str) -> Result<(), String> {
+        let mut buf = [0u8; 64];
+        let len = STANDARD.decode_slice(key_str.trim(), &mut buf)
+            .map_err(|e| format!("私钥 Base64 格式错误: {}", e))?;
+        if len != 32 {
+            return Err(format!("私钥必须是 32 字节，传入了 {} 字节。", len));
+        }
+        Ok(())
     }
 }

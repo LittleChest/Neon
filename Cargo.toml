@@ -4,9 +4,11 @@ version = "1.0.0"
 edition = "2024"
 
 [dependencies]
+tokio = { version = "1.52.3", features = ["rt", "net", "time", "macros", "fs", "sync"] }
 serde = { version = "1.0.228", features = ["derive"] }
 toml = "1.1.2+spec-1.1.0"
 ipnet = "2.12.0"
+base64 = "0.22.1"
 
 [profile.release]
 opt-level = "z"
