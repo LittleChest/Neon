@@ -9,7 +9,7 @@ use tokio::net::UnixStream;
 pub async fn run_start() {
     if let Err(e) = try_start().await {
         eprintln!("- [!] 无法与守护进程通信: {e}");
-        std::future::pending::<()>().await;
+        countdown(10).await;
     }
 }
 
@@ -35,7 +35,7 @@ async fn try_start() -> io::Result<()> {
 pub async fn run_action() {
     if let Err(e) = try_action().await {
         eprintln!("- [!] 无法与守护进程通信: {e}");
-        std::future::pending::<()>().await;
+        countdown(10).await;
     }
 }
 
@@ -47,7 +47,11 @@ async fn try_action() -> io::Result<()> {
 
     while let Ok(Some(line)) = lines.next_line().await {
         match line.as_str() {
-            "WAIT" => std::future::pending::<()>().await,
+            "WAIT" => {
+                println!("- [i] 再次点按以停用，或等待自动关闭...");
+                countdown(10).await;
+                break;
+            }
             "EXIT" => {
                 let done = Arc::new(AtomicBool::new(false));
                 let tail = tokio::spawn(tail_log(crate::LOG_FILE.to_string(), done.clone()));
@@ -71,6 +75,15 @@ async fn try_action() -> io::Result<()> {
 
 pub async fn is_daemon_running() -> bool {
     UnixStream::connect(SOCKET_PATH).await.is_ok()
+}
+
+async fn countdown(secs: u64) {
+    let mut remaining = secs;
+    while remaining > 0 {
+        eprintln!("\n- [i] 将在 {remaining} 秒后关闭...");
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        remaining -= 1;
+    }
 }
 
 async fn tail_log(path: String, done: Arc<AtomicBool>) {

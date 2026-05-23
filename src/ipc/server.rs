@@ -58,7 +58,10 @@ pub async fn handle_next(
             let _ = writer.write_all(text.as_bytes()).await;
             (IpcResult::StatsOnly, None)
         }
-        "start" => (IpcResult::StartRequested, None),
+        "start" => {
+            let _ = writer.write_all(b"DONE\n").await;
+            (IpcResult::StartRequested, None)
+        }
         "disable" => (IpcResult::DeinitRequested, Some(writer)),
         "action" => {
             let result = handle_action(&mut writer, iface_name, config_path, running_config, pre_disable, current_endpoint, refresh_sec).await;
