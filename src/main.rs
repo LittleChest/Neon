@@ -26,12 +26,7 @@ fn main() {
             let daemon_running = rt.block_on(crate::ipc::client::is_daemon_running());
 
             if daemon_running {
-                rt.block_on(async {
-                    if let Err(e) = crate::ipc::client::run_action().await {
-                        eprintln!("- [!] 无法与守护进程通信: {e}");
-                        std::future::pending::<()>().await;
-                    }
-                });
+                rt.block_on(crate::ipc::client::run_action());
             } else {
                 {
                     let p = std::path::Path::new(config_path);
@@ -65,11 +60,7 @@ fn main() {
                     }
                     _ => {
                         std::thread::sleep(std::time::Duration::from_millis(200));
-                        rt.block_on(async {
-                            if let Err(e) = crate::ipc::client::run_start().await {
-                                eprintln!("- [!] 启动失败: {e}");
-                            }
-                        });
+                        rt.block_on(crate::ipc::client::run_start());
                     }
                 }
             }

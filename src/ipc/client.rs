@@ -6,7 +6,14 @@ use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncSeekExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 
-pub async fn run_start() -> io::Result<()> {
+pub async fn run_start() {
+    if let Err(e) = try_start().await {
+        eprintln!("- [!] 无法与守护进程通信: {e}");
+        std::future::pending::<()>().await;
+    }
+}
+
+async fn try_start() -> io::Result<()> {
     let stream = UnixStream::connect(SOCKET_PATH).await?;
     let (reader, mut writer) = stream.into_split();
     let mut lines = BufReader::new(reader).lines();
@@ -25,7 +32,14 @@ pub async fn run_start() -> io::Result<()> {
     Ok(())
 }
 
-pub async fn run_action() -> io::Result<()> {
+pub async fn run_action() {
+    if let Err(e) = try_action().await {
+        eprintln!("- [!] 无法与守护进程通信: {e}");
+        std::future::pending::<()>().await;
+    }
+}
+
+async fn try_action() -> io::Result<()> {
     let stream = UnixStream::connect(SOCKET_PATH).await?;
     let (reader, mut writer) = stream.into_split();
     let mut lines = BufReader::new(reader).lines();
