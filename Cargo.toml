@@ -6,7 +6,7 @@ edition = "2024"
 [dependencies]
 tokio = { version = "1.52.3", features = ["rt", "net", "time", "macros", "fs", "sync", "io-util"] }
 serde = { version = "1.0.228", features = ["derive"] }
-toml = "1.1.2+spec-1.1.0"
+toml = "1.1.2"
 rtnetlink = "0.21.0"
 netlink-packet-route = "0.30.0"
 futures = "0.3"
