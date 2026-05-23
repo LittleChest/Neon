@@ -34,7 +34,7 @@ pub struct DaemonState {
     pub iface_str: String,
     pub pool: Vec<SocketAddr>,
     pub current_endpoint: SocketAddr,
-    pub hopping: HoppingEngine,
+    pub hopping: std::sync::Arc<HoppingEngine>,
     pub prop_path: PathBuf,
     pub pre_disable_since: Option<Instant>,
     pub ipc_listener: Option<tokio::net::UnixListener>,
@@ -73,7 +73,7 @@ pub async fn init(
 
     let pk = decode_b64_key(&config.interface.private_key).ok()?;
     let pubk = decode_b64_key(WARP_PEER_KEY).ok()?;
-    let hopping = HoppingEngine::new(pk, pubk, None);
+    let hopping = std::sync::Arc::new(HoppingEngine::new(pk, pubk, None));
 
     let first_ep = match hopping.find_first(&pool, config.hopping.concurrent_tests).await {
         Some(ep) => ep,
@@ -135,9 +135,19 @@ pub async fn run_loop(mut state: DaemonState) {
 
     let listener = state.ipc_listener.take().expect("信道未初始化");
 
+    let (hop_tx, mut hop_rx) = tokio::sync::mpsc::channel::<SocketAddr>(1);
+
     loop {
         let endpoint_str = state.current_endpoint.to_string();
         tokio::select! {
+            Some(best) = hop_rx.recv() => {
+                if best != state.current_endpoint {
+                    if WgManager::update_endpoint(&state.iface, WARP_PEER_KEY, best).is_ok() {
+                        state.current_endpoint = best;
+                    }
+                }
+            }
+
             result = server::handle_next(
                 &listener,
                 &state.iface_str,
@@ -171,15 +181,15 @@ pub async fn run_loop(mut state: DaemonState) {
             }
 
             _ = hopping_tick.tick() => {
-                if let Some(best) = state.hopping
-                    .find_best(&state.pool, state.config.hopping.concurrent_tests).await
-                {
-                    if best != state.current_endpoint {
-                        if WgManager::update_endpoint(&state.iface, WARP_PEER_KEY, best).is_ok() {
-                            state.current_endpoint = best;
-                        }
+                let engine = state.hopping.clone();
+                let pool = state.pool.clone();
+                let concurrent = state.config.hopping.concurrent_tests;
+                let tx = hop_tx.clone();
+                tokio::task::spawn_local(async move {
+                    if let Some(best) = engine.find_best(&pool, concurrent).await {
+                        let _ = tx.send(best).await;
                     }
-                }
+                });
             }
 
             _ = ui_tick.tick() => {
