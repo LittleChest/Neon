@@ -53,6 +53,8 @@ pub async fn init(
     Logger::init(crate::LOG_FILE);
     Logger::info("载入中...");
 
+    let _ = tokio::fs::remove_file("/data/adb/modules/WARP/disable").await;
+
     WgManager::check_kernel_support().ok()?;
     let iface = WgManager::find_available_name().ok()?;
 
@@ -243,6 +245,9 @@ async fn deinit(state: &DaemonState) {
         }
         Err(_) => Logger::warn("接口不存在，跳过删除"),
     }
+
+    let disable_path = Path::new("/data/adb/modules/WARP/disable");
+    let _ = tokio::fs::write(disable_path, "").await;
 
     let _ = crate::prop::write_stopped(&state.prop_path).await;
 
