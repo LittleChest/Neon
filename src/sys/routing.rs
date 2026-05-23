@@ -143,12 +143,11 @@ impl RoutingManager {
         fwmark: u32,
         fwmask: u32,
     ) -> io::Result<()> {
-        // VPN=13000, fwmark=16000, oif=17000
-        const PRIO_PROXY: u32 = 11500;
-        const PRIO_BYPASS: u32 = 15800;
-        const PRIO_LIST: u32 = 15900;
-        const PRIO_FWMARK: u32 = 15999;
-        const GOTO_TARGET: u32 = 16000;
+        const PRIO_PROXY: u32 = 30500;
+        const PRIO_BYPASS: u32 = 30600;
+        const PRIO_LIST: u32 = 30700;
+        const PRIO_FWMARK: u32 = 30999;
+        const GOTO_TARGET: u32 = 31000;
 
         for cidr in must_proxy {
             self.add_lookup_rule(cidr, table_id, PRIO_PROXY).await?;
@@ -196,7 +195,7 @@ impl RoutingManager {
     pub async fn cleanup_rules(&self) -> io::Result<()> {
         Logger::info("正在清理路由规则");
 
-        const OUR_PRIOS: &[u32] = &[11500, 15800, 15900, 15999];
+        const OUR_PRIOS: &[u32] = &[30500, 30600, 30700, 30999];
         let mut deleted = 0u32;
 
         for ip_ver in [IpVersion::V4, IpVersion::V6] {
