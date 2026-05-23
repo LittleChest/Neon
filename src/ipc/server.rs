@@ -86,8 +86,9 @@ async fn handle_action(
 
     if config_diff {
         let _ = writer
-            .write_all("- [i] 正在应用配置...\nEXIT\n".as_bytes())
+            .write_all("- [i] 检测到配置差异，正在应用...\nEXIT\n".as_bytes())
             .await;
+        return IpcResult::DeinitRequested;
     }
 
     if effective_pre_disable.is_some() {
@@ -98,6 +99,8 @@ async fn handle_action(
     }
 
     let stats_text = read_stats(iface_name, current_endpoint, refresh_sec);
+    let logs_text = show_unread_logs().await;
+    let _ = writer.write_all(logs_text.as_bytes()).await;
     let _ = writer.write_all(stats_text.as_bytes()).await;
     let _ = writer
         .write_all("- [!] 未发现配置文件变更。\n- [i] 想要停用服务吗？请在关闭此窗口后的 5 秒内再次点按。\nWAIT\n".as_bytes())
@@ -111,6 +114,36 @@ async fn handle_action(
 async fn check_config_diff(_config_path: &str) -> bool {
     // @TODO
     false
+}
+
+async fn show_unread_logs() -> String {
+    let content = match tokio::fs::read_to_string(crate::LOG_FILE).await {
+        Ok(c) => c,
+        Err(_) => return String::new(),
+    };
+
+    let mut lines: Vec<String> = content.lines().map(|s| s.to_string()).collect();
+    let mut output = String::new();
+    let mut modified = false;
+
+    for line in lines.iter_mut() {
+        if line.starts_with('!') {
+            continue;
+        }
+        if line.contains("⛔") || line.contains("❌") || line.contains("⚠️") {
+            output.push_str(line);
+            output.push('\n');
+            let marked = format!("!{line}");
+            *line = marked;
+            modified = true;
+        }
+    }
+
+    if modified {
+        let _ = tokio::fs::write(crate::LOG_FILE, lines.join("\n")).await;
+    }
+
+    output
 }
 
 fn read_stats(iface_name: &str, current_endpoint: &str, refresh_sec: u64) -> String {
