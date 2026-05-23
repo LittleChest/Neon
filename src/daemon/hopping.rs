@@ -4,7 +4,7 @@ use futures::stream::{FuturesUnordered, StreamExt};
 use std::net::SocketAddr;
 use std::time::Duration;
 use tokio::net::UdpSocket;
-use tokio::time::{timeout, Instant};
+use tokio::time::Instant;
 
 const BYPASS_MARK: u32 = 0x114514;
 
@@ -18,7 +18,6 @@ pub struct HoppingEngine {
     private_key: StaticSecret,
     peer_public_key: PublicKey,
     preshared_key: Option<[u8; 32]>,
-    probe_timeout: Duration,
 }
 
 impl HoppingEngine {
@@ -26,13 +25,11 @@ impl HoppingEngine {
         private_key: [u8; 32],
         peer_public_key: [u8; 32],
         preshared_key: Option<[u8; 32]>,
-        probe_timeout: Duration,
     ) -> Self {
         Self {
             private_key: StaticSecret::from(private_key),
             peer_public_key: PublicKey::from(peer_public_key),
             preshared_key,
-            probe_timeout,
         }
     }
 
@@ -50,7 +47,7 @@ impl HoppingEngine {
 
         let mut probes = FuturesUnordered::new();
         for ep in candidates {
-            probes.push(self.probe_one(ep));
+            probes.push(self.probe(ep));
         }
 
         while let Some(outcome) = probes.next().await {
@@ -77,7 +74,7 @@ impl HoppingEngine {
         }
         let mut probes = FuturesUnordered::new();
         for &ep in endpoints {
-            probes.push(self.probe_one(ep));
+            probes.push(self.probe(ep));
         }
         while let Some(outcome) = probes.next().await {
             if let Some(o) = outcome {
@@ -89,7 +86,7 @@ impl HoppingEngine {
         None
     }
 
-    pub async fn probe_one(&self, endpoint: SocketAddr) -> Option<ProbeOutcome> {
+    pub async fn probe(&self, endpoint: SocketAddr) -> Option<ProbeOutcome> {
         let mut tunnel = Tunn::new(
             self.private_key.clone(),
             self.peer_public_key,
@@ -113,119 +110,127 @@ impl HoppingEngine {
         };
 
         let t0 = Instant::now();
-        let result = timeout(self.probe_timeout, do_handshake(&mut tunnel, &socket)).await;
 
-        match result {
-            Ok(true) => {
-                let rtt = t0.elapsed();
-                Some(ProbeOutcome { endpoint, rtt })
+        let hs_deadline = Instant::now() + Duration::from_secs(3);
+        let mut tx = [0u8; 2048];
+        let mut rx = [0u8; 2048];
+
+        let init_pkt = match tunnel.format_handshake_initiation(&mut tx, true) {
+            TunnResult::WriteToNetwork(pkt) => pkt,
+            _ => return None,
+        };
+        if socket.send(init_pkt).await.is_err() {
+            return None;
+        }
+
+        loop {
+            if Instant::now() >= hs_deadline {
+                crate::state::logger::Logger::warn(&format!("握手超时: {}", endpoint));
+                return None;
             }
-            _ => None,
-        }
-    }
-}
-
-async fn do_handshake(tunnel: &mut Tunn, socket: &UdpSocket) -> bool {
-    let mut tx = [0u8; 2048];
-    let mut rx = [0u8; 2048];
-
-    match tunnel.format_handshake_initiation(&mut tx, true) {
-        TunnResult::WriteToNetwork(pkt) => {
-            if socket.send(pkt).await.is_err() {
-                return false;
-            }
-        }
-        _ => return false,
-    }
-
-    let deadline = Instant::now() + Duration::from_secs(10);
-
-    loop {
-        if Instant::now() > deadline {
-            return false;
-        }
-        match timeout(Duration::from_millis(200), socket.recv(&mut rx)).await {
-            Ok(Ok(size)) => {
-                match tunnel.decapsulate(None, &rx[..size], &mut tx) {
-                    TunnResult::WriteToNetwork(pkt) => {
-                        let _ = socket.send(pkt).await;
-                        if size == 92 && rx[0] == 2 {
-                            break;
-                        }
-                    }
-                    TunnResult::Done => {
-                        if size == 92 && rx[0] == 2 {
-                            break;
-                        }
-                    }
-                    TunnResult::WriteToTunnelV4(_, _) | TunnResult::WriteToTunnelV6(_, _) => {
-                        break;
-                    }
-                    _ => {}
-                }
-            }
-            Ok(Err(_)) => return false,
-            Err(_) => {
-                if let TunnResult::WriteToNetwork(pkt) = tunnel.update_timers(&mut tx) {
-                    let _ = socket.send(pkt).await;
-                }
-            }
-        }
-    }
-
-    let local_ip = match socket.local_addr() {
-        Ok(addr) => match addr {
-            SocketAddr::V4(a) => *a.ip(),
-            _ => return true,
-        },
-        Err(_) => return true,
-    };
-    let dst_ip = std::net::Ipv4Addr::new(1, 1, 1, 1); // Cloudflare DNS，几乎总是可达
-
-    let mut plain_pkt = [0u8; 256];
-    let mut enc_pkt = [0u8; 256];
-    let ident = 0x4E4F_u16; // NO Neon
-    let seq = 1u16;
-
-    let pkt_len = build_echo_request(local_ip, dst_ip, 64, seq, ident, &mut plain_pkt);
-
-    match tunnel.encapsulate(&plain_pkt[..pkt_len], &mut enc_pkt) {
-        TunnResult::WriteToNetwork(pkt) => {
-            let _ = socket.send(pkt).await;
-        }
-        _ => return true,
-    }
-
-    loop {
-        if Instant::now() > deadline {
-            return false;
-        }
-        match timeout(Duration::from_millis(300), socket.recv(&mut rx)).await {
-            Ok(Ok(size)) => {
-                match tunnel.decapsulate(None, &rx[..size], &mut tx) {
-                    TunnResult::WriteToTunnelV4(pkt, _) => {
-                        if let Some((r_ident, r_seq)) = parse_icmp_reply(pkt) {
-                            if r_ident == ident && r_seq == seq {
-                                return true;
+            let remaining = hs_deadline.saturating_duration_since(Instant::now());
+            let recv_timeout = remaining.min(Duration::from_millis(200));
+            match tokio::time::timeout(recv_timeout, socket.recv(&mut rx)).await {
+                Ok(Ok(size)) => {
+                    match tunnel.decapsulate(None, &rx[..size], &mut tx) {
+                        TunnResult::WriteToNetwork(pkt) => {
+                            let _ = socket.send(pkt).await;
+                            if size == 92 && rx[0] == 2 {
+                                break;
                             }
                         }
+                        TunnResult::Done => {
+                            if size == 92 && rx[0] == 2 {
+                                break;
+                            }
+                        }
+                        TunnResult::WriteToTunnelV4(_, _) | TunnResult::WriteToTunnelV6(_, _) => {
+                            break;
+                        }
+                        _ => {}
                     }
-                    TunnResult::WriteToNetwork(pkt) => {
+                }
+                Ok(Err(_)) => return None,
+                Err(_) => {
+                    if let TunnResult::WriteToNetwork(pkt) = tunnel.update_timers(&mut tx) {
                         let _ = socket.send(pkt).await;
                     }
-                    _ => {}
                 }
             }
-            Ok(Err(_)) => return false,
-            Err(_) => {
-                match tunnel.encapsulate(&plain_pkt[..pkt_len], &mut enc_pkt) {
-                    TunnResult::WriteToNetwork(pkt) => {
+        }
+
+        let icmp_deadline = Instant::now() + Duration::from_secs(2);
+
+        let local_ip = match socket.local_addr() {
+            Ok(addr) => match addr {
+                SocketAddr::V4(a) => *a.ip(),
+                _ => {
+                    crate::state::logger::Logger::warn(&format!("非 IPv4 地址: {}", endpoint));
+                    return None;
+                }
+            },
+            Err(_) => return None,
+        };
+        let dst_ip = std::net::Ipv4Addr::new(1, 1, 1, 1);
+
+        let mut plain_pkt = [0u8; 256];
+        let mut enc_pkt = [0u8; 256];
+        let ident = 0x4E4F_u16;
+        let seq = 1u16;
+        let pkt_len = build_echo_request(local_ip, dst_ip, 64, seq, ident, &mut plain_pkt);
+
+        match tunnel.encapsulate(&plain_pkt[..pkt_len], &mut enc_pkt) {
+            TunnResult::WriteToNetwork(pkt) => {
+                if socket.send(pkt).await.is_err() {
+                    crate::state::logger::Logger::warn(&format!("ICMP 发送失败: {}", endpoint));
+                    return None;
+                }
+            }
+            _ => {
+                crate::state::logger::Logger::warn(&format!("ICMP 封装失败: {}", endpoint));
+                return None;
+            }
+        }
+
+        // 等待 ICMP echo reply（带重试）
+        loop {
+            if Instant::now() >= icmp_deadline {
+                crate::state::logger::Logger::warn(&format!(
+                    "ICMP 超时: {}",
+                    endpoint
+                ));
+                return None;
+            }
+            let remaining = icmp_deadline.saturating_duration_since(Instant::now());
+            let recv_timeout = remaining.min(Duration::from_millis(300));
+            match tokio::time::timeout(recv_timeout, socket.recv(&mut rx)).await {
+                Ok(Ok(size)) => {
+                    match tunnel.decapsulate(None, &rx[..size], &mut tx) {
+                        TunnResult::WriteToTunnelV4(pkt, _) => {
+                            if let Some((r_ident, r_seq)) = parse_icmp_reply(pkt) {
+                                if r_ident == ident && r_seq == seq {
+                                    let rtt = t0.elapsed();
+                                    return Some(ProbeOutcome { endpoint, rtt });
+                                }
+                            }
+                        }
+                        TunnResult::WriteToNetwork(pkt) => {
+                            let _ = socket.send(pkt).await;
+                        }
+                        _ => {}
+                    }
+                }
+                Ok(Err(_)) => return None,
+                Err(_) => {
+                    match tunnel.encapsulate(&plain_pkt[..pkt_len], &mut enc_pkt) {
+                        TunnResult::WriteToNetwork(pkt) => {
+                            let _ = socket.send(pkt).await;
+                        }
+                        _ => {}
+                    }
+                    if let TunnResult::WriteToNetwork(pkt) = tunnel.update_timers(&mut tx) {
                         let _ = socket.send(pkt).await;
                     }
-                    _ => {}
-                }
-                if let TunnResult::WriteToNetwork(pkt) = tunnel.update_timers(&mut tx) {
-                    let _ = socket.send(pkt).await;
                 }
             }
         }
@@ -357,7 +362,7 @@ pub async fn run_test(engine: &HoppingEngine, ports: &[u16], ip_range: &[u8; 4],
     for chunk in endpoints.chunks(8) {
         let mut probes = FuturesUnordered::new();
         for &ep in chunk {
-            probes.push(async move { (ep, engine.probe_one(ep).await) });
+            probes.push(async move { (ep, engine.probe(ep).await) });
         }
         while let Some((ep, outcome)) = probes.next().await {
             match outcome {

@@ -59,7 +59,7 @@ fn main() {
                             Err(e) => { eprintln!("公钥无效: {e}"); return; }
                         };
                         let engine = crate::daemon::hopping::HoppingEngine::new(
-                            pk, pubk, None, std::time::Duration::from_secs(5),
+                            pk, pubk, None,
                         );
                         crate::daemon::hopping::run_test(
                             &engine, WARP_PORTS, &WARP_IP_BASE, WARP_IP_COUNT,

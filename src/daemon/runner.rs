@@ -62,7 +62,7 @@ pub async fn init(config_path: &str) -> Option<DaemonState> {
 
     let pk = decode_b64_key(&config.interface.private_key).ok()?;
     let pubk = decode_b64_key(WARP_PEER_KEY).ok()?;
-    let hopping = HoppingEngine::new(pk, pubk, None, Duration::from_secs(5));
+    let hopping = HoppingEngine::new(pk, pubk, None);
 
     let first_ep = match hopping.find_first(&pool).await {
         Some(ep) => ep,
