@@ -24,7 +24,6 @@ impl Logger {
         if let Some(parent) = path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-        let _ = std::fs::write(path, "");
         GLOBAL_LOG
             .set(LoggerInner { state: RwLock::new(LogState::default()), file: path })
             .ok();
