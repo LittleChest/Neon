@@ -59,27 +59,27 @@ impl Logger {
         state.fatal = Some(msg.to_string());
         drop(state);
         let entry = format!("⛔ {msg}");
-        eprintln!("{entry}");
+        println!("{entry}");
         Self::append_line(&entry);
     }
 
     pub fn error(msg: &str) {
         Self::inner().state.write().unwrap().error_count += 1;
         let entry = format!("❌ {msg}");
-        eprintln!("{entry}");
+        println!("{entry}");
         Self::append_line(&entry);
     }
 
     pub fn warn(msg: &str) {
         Self::inner().state.write().unwrap().warning_count += 1;
         let entry = format!("⚠️ {msg}");
-        eprintln!("{entry}");
+        println!("{entry}");
         Self::append_line(&entry);
     }
 
     pub fn info(msg: &str) {
         let entry = format!("ℹ️ {msg}");
-        eprintln!("{entry}");
+        println!("{entry}");
         Self::append_line(&entry);
     }
 }
