@@ -388,11 +388,12 @@ pub async fn run_test(engine: &HoppingEngine, ports: &[u16], ip_range: &[u8; 4],
                     failed += 1;
                 }
             }
+            let _ = std::io::Write::flush(&mut std::io::stdout());
         }
     }
 
     println!("\n完成: {success} 可达, {failed} 超时");
-
+    let _ = std::io::Write::flush(&mut std::io::stdout());
     results.sort_by_key(|(_, rtt)| *rtt);
     let top5: Vec<_> = results.iter().take(5).collect();
     if !top5.is_empty() {

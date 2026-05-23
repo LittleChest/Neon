@@ -29,6 +29,7 @@ fn main() {
                 rt.block_on(async {
                     if let Err(e) = crate::ipc::client::run_action().await {
                         eprintln!("- [!] 无法与守护进程通信: {e}");
+                        std::future::pending::<()>().await;
                     }
                 });
             } else {
