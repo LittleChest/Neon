@@ -37,47 +37,47 @@ impl HoppingEngine {
         &self,
         endpoints: &[SocketAddr],
         concurrent: usize,
+        wait_sec: u64,
     ) -> Option<SocketAddr> {
         let count = if concurrent == 0 { 1 } else { concurrent };
-        let count = count.min(endpoints.len());
-        if count == 0 {
-            return None;
-        }
-
-        let candidates = random_sample(endpoints, count);
-
-        let mut probes = FuturesUnordered::new();
-        for ep in candidates {
-            probes.push(self.probe(ep));
-        }
-
-        while let Some(outcome) = probes.next().await {
-            match outcome {
-                Some(o) => {
-                    println!(
-                        "使用端点: {} (RTT {:.0}ms)",
-                        o.endpoint,
-                        o.rtt.as_secs_f64() * 1000.0
-                    );
-                    return Some(o.endpoint);
-                }
-                None => continue,
-            }
-        }
-
-        eprintln!("未找到可用端点");
-        None
-    }
-
-    pub async fn find_first(&self, endpoints: &[SocketAddr], batch_size: usize) -> Option<SocketAddr> {
         if endpoints.is_empty() {
             return None;
         }
-        let batch = if batch_size == 0 { 1 } else { batch_size };
 
-        for chunk in endpoints.chunks(batch) {
+        loop {
+            let candidates = random_sample(endpoints, count);
             let mut probes = FuturesUnordered::new();
-            for &ep in chunk {
+            for ep in candidates {
+                probes.push(self.probe(ep));
+            }
+            while let Some(outcome) = probes.next().await {
+                match outcome {
+                    Some(o) => {
+                        println!(
+                            "使用端点: {} (RTT {:.0}ms)",
+                            o.endpoint,
+                            o.rtt.as_secs_f64() * 1000.0
+                        );
+                        return Some(o.endpoint);
+                    }
+                    None => continue,
+                }
+            }
+            println!("等待 {wait_sec} 秒后重试...");
+            tokio::time::sleep(Duration::from_secs(wait_sec)).await;
+        }
+    }
+
+    pub async fn find_first(&self, endpoints: &[SocketAddr], concurrent: usize, wait_sec: u64) -> Option<SocketAddr> {
+        if endpoints.is_empty() {
+            return None;
+        }
+        let count = if concurrent == 0 { 1 } else { concurrent };
+
+        loop {
+            let candidates = random_sample(endpoints, count);
+            let mut probes = FuturesUnordered::new();
+            for ep in candidates {
                 probes.push(self.probe(ep));
             }
             while let Some(outcome) = probes.next().await {
@@ -86,9 +86,9 @@ impl HoppingEngine {
                     return Some(o.endpoint);
                 }
             }
+            println!("等待 {wait_sec} 秒后重试...");
+            tokio::time::sleep(Duration::from_secs(wait_sec)).await;
         }
-        eprintln!("未找到可用端点");
-        None
     }
 
     pub async fn probe(&self, endpoint: SocketAddr) -> Option<ProbeOutcome> {

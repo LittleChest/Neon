@@ -61,7 +61,7 @@ pub async fn init(
     let hopping = std::sync::Arc::new(HoppingEngine::new(pk, pubk, None));
 
     Logger::info("正在探测可用端点...");
-    let first_ep = match hopping.find_first(&pool, config.hopping.concurrent_tests).await {
+    let first_ep = match hopping.find_first(&pool, config.hopping.concurrent_tests, config.hopping.wait_sec).await {
         Some(ep) => ep,
         None => {
             Logger::warn("未找到可用端点");
@@ -185,9 +185,10 @@ pub async fn run_loop(mut state: DaemonState) {
                 let engine = state.hopping.clone();
                 let pool = state.pool.clone();
                 let concurrent = state.config.hopping.concurrent_tests;
+                let wait_sec = state.config.hopping.wait_sec;
                 let tx = hop_tx.clone();
                 tokio::task::spawn_local(async move {
-                    if let Some(best) = engine.find_best(&pool, concurrent).await {
+                    if let Some(best) = engine.find_best(&pool, concurrent, wait_sec).await {
                         let _ = tx.send(best).await;
                     }
                 });

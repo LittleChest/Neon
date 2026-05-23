@@ -30,6 +30,7 @@ pub struct RoutingConfig {
 #[derive(Debug, Deserialize, Serialize, PartialEq, Clone)]
 pub struct HoppingConfig {
     pub concurrent_tests: usize,
+    pub wait_sec: u64,
     pub interval_sec: u64,
 }
 
@@ -72,7 +73,7 @@ impl Default for RoutingConfig {
 
 impl Default for HoppingConfig {
     fn default() -> Self {
-        Self { concurrent_tests: 8, interval_sec: 60 }
+        Self { concurrent_tests: 8, wait_sec: 60, interval_sec: 60 }
     }
 }
 
