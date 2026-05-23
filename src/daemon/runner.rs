@@ -71,6 +71,11 @@ pub async fn init(
     let pubk = decode_b64_key(WARP_PEER_KEY).ok()?;
     let hopping = std::sync::Arc::new(HoppingEngine::new(pk, pubk, None));
 
+    while !hopping.check_connectivity().await {
+        Logger::info("等待网络连接...");
+        tokio::time::sleep(Duration::from_secs(10)).await;
+    }
+
     Logger::info("正在探测可用端点...");
     let first_ep = match hopping.pick_initial(&pool, config.hopping.concurrent_tests).await {
         Some(ep) => ep,
@@ -189,9 +194,13 @@ pub async fn run_loop(mut state: DaemonState) {
                 let concurrent = state.config.hopping.concurrent_tests;
                 let wait_sec = state.config.hopping.wait_sec;
                 let tx = hop_tx.clone();
-                tokio::task::spawn_local(async move {
-                    if let Some(best) = engine.find_best(&pool, concurrent, wait_sec).await {
-                        let _ = tx.send(best).await;
+                tokio::spawn(async move {
+                    if engine.check_connectivity().await {
+                        if let Some(best) = engine.find_best(&pool, concurrent, wait_sec).await {
+                            let _ = tx.send(best).await;
+                        }
+                    } else {
+                        Logger::warn("未连接至互联网");
                     }
                 });
             }

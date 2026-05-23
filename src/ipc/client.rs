@@ -7,20 +7,40 @@ use tokio::io::{AsyncBufReadExt, AsyncSeekExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 
 pub async fn run_start() {
-    if let Err(e) = try_start().await {
-        eprintln!("- [!] 无法与守护进程通信: {e}");
-        countdown(10).await;
+    match try_start().await {
+        Ok(_) => {
+            countdown(10).await;
+        }
+        Err(e) => {
+            eprintln!("- [!] 启动失败: {e}");
+            countdown(10).await;
+        }
     }
 }
 
 async fn try_start() -> io::Result<()> {
-    let stream = UnixStream::connect(SOCKET_PATH).await?;
+    let done = Arc::new(AtomicBool::new(false));
+    let tail = tokio::spawn(tail_log(crate::LOG_FILE.to_string(), done.clone()));
+
+    let mut waited = 0u64;
+    let stream = loop {
+        match UnixStream::connect(SOCKET_PATH).await {
+            Ok(s) => break s,
+            Err(e) => {
+                if waited >= 15000 {
+                    done.store(true, Ordering::Relaxed);
+                    let _ = tail.await;
+                    return Err(e);
+                }
+                tokio::time::sleep(Duration::from_millis(200)).await;
+                waited += 200;
+            }
+        }
+    };
+
     let (reader, mut writer) = stream.into_split();
     let mut lines = BufReader::new(reader).lines();
     writer.write_all(b"start\n").await?;
-
-    let done = Arc::new(AtomicBool::new(false));
-    let tail = tokio::spawn(tail_log(crate::LOG_FILE.to_string(), done.clone()));
 
     while let Ok(Some(line)) = lines.next_line().await {
         if line == "DONE" {
@@ -33,9 +53,13 @@ async fn try_start() -> io::Result<()> {
 }
 
 pub async fn run_action() {
-    if let Err(e) = try_action().await {
-        eprintln!("- [!] 无法与守护进程通信: {e}");
-        countdown(10).await;
+    match try_action().await {
+        Ok(_) => {
+        }
+        Err(e) => {
+            eprintln!("- [!] 无法与守护进程通信: {e}");
+            countdown(10).await;
+        }
     }
 }
 
@@ -62,6 +86,7 @@ async fn try_action() -> io::Result<()> {
                 }
                 done.store(true, Ordering::Relaxed);
                 let _ = tail.await;
+                countdown(10).await;
                 break;
             }
             "DONE" => break,
@@ -77,7 +102,7 @@ pub async fn is_daemon_running() -> bool {
     UnixStream::connect(SOCKET_PATH).await.is_ok()
 }
 
-async fn countdown(secs: u64) {
+pub async fn countdown(secs: u64) {
     let mut remaining = secs;
     while remaining > 0 {
         eprintln!("\n- [i] 将在 {remaining} 秒后关闭...");

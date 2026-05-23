@@ -23,10 +23,18 @@ fn main() {
             let rt = tokio::runtime::Builder::new_current_thread()
                 .enable_all().build().expect("无法初始化运行时");
 
-            let daemon_running = rt.block_on(crate::ipc::client::is_daemon_running());
+            let sock_path = crate::ipc::server::SOCKET_PATH;
+            let sock_exists = std::path::Path::new(sock_path).exists();
 
-            if daemon_running {
-                rt.block_on(crate::ipc::client::run_action());
+            if sock_exists {
+                let daemon_running = rt.block_on(crate::ipc::client::is_daemon_running());
+                if daemon_running {
+                    rt.block_on(crate::ipc::client::run_action());
+                } else {
+                    eprintln!("- [!] 检测到已存在的信道文件，但守护进程未响应。");
+                    eprintln!("- [i] 这可能意味着守护进程正在启动。");
+                    rt.block_on(crate::ipc::client::countdown(10));
+                }
             } else {
                 {
                     let p = std::path::Path::new(config_path);
@@ -59,7 +67,6 @@ fn main() {
                         unsafe { libc::_exit(0); }
                     }
                     _ => {
-                        std::thread::sleep(std::time::Duration::from_millis(200));
                         rt.block_on(crate::ipc::client::run_start());
                     }
                 }
