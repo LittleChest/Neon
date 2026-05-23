@@ -14,12 +14,7 @@ fn main() {
     match sub {
         Some("init") => {
             let config_path = args.get(2).map(|s| s.as_str()).unwrap_or("/data/adb/warp/config.toml");
-            let rt = tokio::runtime::Builder::new_current_thread()
-                .enable_all().build().expect("无法初始化运行时");
-            rt.block_on(async {
-                let _ = crate::config::Config::ensure_exists(config_path).await;
-                crate::daemon::runner::init(config_path, None).await;
-            });
+            let _ = crate::config::Config::ensure_exists(config_path);
         }
 
         Some("action") => {
