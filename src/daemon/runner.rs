@@ -140,6 +140,7 @@ pub async fn run_loop(mut state: DaemonState) {
                 &listener,
                 &state.iface_str,
                 &state.config_path,
+                &state.config,
                 state.pre_disable_since,
                 &endpoint_str,
                 state.config.hopping.interval_sec,

@@ -1,3 +1,4 @@
+use crate::config::Config;
 use crate::state::logger::Logger;
 use std::io;
 use std::time::Instant;
@@ -30,6 +31,7 @@ pub async fn handle_next(
     listener: &UnixListener,
     iface_name: &str,
     config_path: &str,
+    running_config: &Config,
     pre_disable: Option<Instant>,
     current_endpoint: &str,
     refresh_sec: u64,
@@ -59,7 +61,7 @@ pub async fn handle_next(
         "start" => (IpcResult::StartRequested, None),
         "disable" => (IpcResult::DeinitRequested, Some(writer)),
         "action" => {
-            let result = handle_action(&mut writer, iface_name, config_path, pre_disable, current_endpoint, refresh_sec).await;
+            let result = handle_action(&mut writer, iface_name, config_path, running_config, pre_disable, current_endpoint, refresh_sec).await;
             match result {
                 IpcResult::DeinitRequested => (result, Some(writer)),
                 _ => (result, None),
@@ -76,13 +78,14 @@ async fn handle_action(
     writer: &mut tokio::net::unix::OwnedWriteHalf,
     iface_name: &str,
     config_path: &str,
+    running_config: &Config,
     pre_disable: Option<Instant>,
     current_endpoint: &str,
     refresh_sec: u64,
 ) -> IpcResult {
     let effective_pre_disable = pre_disable.filter(|t| t.elapsed().as_secs() < PRE_DISABLE_SECS);
 
-    let config_diff = check_config_diff(config_path).await;
+    let config_diff = check_config_diff(config_path, running_config).await;
 
     if config_diff {
         let _ = writer
@@ -111,9 +114,11 @@ async fn handle_action(
     IpcResult::ActionCompleted
 }
 
-async fn check_config_diff(_config_path: &str) -> bool {
-    // @TODO
-    false
+async fn check_config_diff(config_path: &str, running: &Config) -> bool {
+    match Config::load_and_verify(config_path).await {
+        Ok(disk_config) => *running != disk_config,
+        Err(_) => false,
+    }
 }
 
 async fn show_unread_logs() -> String {

@@ -1,3 +1,4 @@
+use futures::TryStreamExt;
 use crate::state::logger::Logger;
 use ipnet::IpNet;
 use netlink_packet_route::{
@@ -5,7 +6,7 @@ use netlink_packet_route::{
     rule::{RuleAction, RuleAttribute},
     AddressFamily,
 };
-use rtnetlink::{new_connection, Handle};
+use rtnetlink::{new_connection, Handle, IpVersion};
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
@@ -193,7 +194,34 @@ impl RoutingManager {
     }
 
     pub async fn cleanup_rules(&self) -> io::Result<()> {
-        Logger::info("正在清理路由");
+        Logger::info("正在清理路由规则");
+
+        const OUR_PRIOS: &[u32] = &[11500, 15800, 15900, 15999];
+        let mut deleted = 0u32;
+
+        for ip_ver in [IpVersion::V4, IpVersion::V6] {
+            let mut rules = self.handle.rule().get(ip_ver).execute();
+            while let Some(rule) = rules.try_next().await.map_err(|e| {
+                io::Error::new(io::ErrorKind::Other, format!("无法读取路由规则: {e}"))
+            })? {
+                let prio = rule.attributes.iter().find_map(|attr| {
+                    if let RuleAttribute::Priority(p) = attr { Some(*p) } else { None }
+                });
+                if let Some(prio) = prio {
+                    if OUR_PRIOS.contains(&prio) {
+                        if let Err(e) = self.handle.rule().del(rule).execute().await {
+                            Logger::error(&format!("无法删除规则 prio {prio}: {e}"));
+                        } else {
+                            deleted += 1;
+                        }
+                    }
+                }
+            }
+        }
+
+        if deleted > 0 {
+            Logger::info(&format!("已清理 {deleted} 条路由规则"));
+        }
         Ok(())
     }
 }
