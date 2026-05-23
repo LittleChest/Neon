@@ -1,5 +1,6 @@
 mod config;
 mod daemon;
+mod ipc;
 mod prop;
 mod state;
 mod sys;
@@ -17,27 +18,68 @@ fn main() {
                 .enable_all().build().expect("无法初始化运行时");
             rt.block_on(async {
                 let _ = crate::config::Config::ensure_exists(config_path).await;
-                crate::daemon::runner::init(config_path).await;
+                crate::daemon::runner::init(config_path, None).await;
             });
         }
 
         Some("action") => {
-            match std::fs::read_to_string(LOG_FILE) {
-                Ok(content) => {
-                    let entries: Vec<&str> = content
-                        .lines()
-                        .rev()
-                        .filter(|l| l.starts_with("⛔") || l.starts_with("❌") || l.starts_with("⚠️"))
-                        .take(5)
-                        .collect();
-                    if entries.is_empty() {
-                    } else {
-                        for line in entries.iter().rev() {
-                            println!("{line}");
+            let config_path = args.get(2).map(|s| s.as_str()).unwrap_or("/data/adb/warp/config.toml");
+
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all().build().expect("无法初始化运行时");
+
+            let daemon_running = rt.block_on(crate::ipc::client::is_daemon_running());
+
+            if daemon_running {
+                rt.block_on(async {
+                    if let Err(e) = crate::ipc::client::run_action().await {
+                        eprintln!("- [!] 无法与守护进程通信: {e}");
+                    }
+                });
+            } else {
+                // 确保配置文件存在（同步，fork 前）
+                {
+                    let p = std::path::Path::new(config_path);
+                    if !p.exists() {
+                        if let Some(parent) = p.parent() {
+                            let _ = std::fs::create_dir_all(parent);
                         }
+                        let _ = std::fs::write(p, include_str!("../config.default.toml"));
                     }
                 }
-                Err(_) => {}
+
+                // fork：子进程成为后台 daemon，父进程作为客户端 tail 日志
+                match unsafe { libc::fork() } {
+                    -1 => {
+                        eprintln!("- [!] fork 失败");
+                    }
+                    0 => {
+                        // === 子进程：成为 daemon ===
+                        unsafe { libc::setsid(); }
+                        unsafe {
+                            libc::close(0); // stdin
+                            libc::close(1); // stdout
+                            libc::close(2); // stderr
+                        }
+                        let child_rt = tokio::runtime::Builder::new_current_thread()
+                            .enable_all().build().expect("子进程运行时失败");
+                        child_rt.block_on(async {
+                            if let Some(state) = crate::daemon::runner::init(config_path, None).await {
+                                crate::daemon::runner::run_loop(state).await;
+                            }
+                        });
+                        unsafe { libc::_exit(0); }
+                    }
+                    _ => {
+                        // === 父进程：客户端 tail 日志 ===
+                        std::thread::sleep(std::time::Duration::from_millis(200));
+                        rt.block_on(async {
+                            if let Err(e) = crate::ipc::client::run_start().await {
+                                eprintln!("- [!] 启动失败: {e}");
+                            }
+                        });
+                    }
+                }
             }
         }
 
@@ -76,7 +118,7 @@ fn main() {
                 .enable_all().build().expect("tokio 运行时失败");
             rt.block_on(async {
                 let _ = crate::config::Config::ensure_exists(config_path).await;
-                if let Some(state) = crate::daemon::runner::init(config_path).await {
+                if let Some(state) = crate::daemon::runner::init(config_path, None).await {
                     crate::daemon::runner::run_loop(state).await;
                 }
             });

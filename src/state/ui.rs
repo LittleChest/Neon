@@ -4,7 +4,7 @@ use std::path::Path;
 pub struct UiRenderer;
 
 impl UiRenderer {
-    fn human_readable(bytes: u64) -> String {
+    pub fn human_readable(bytes: u64) -> String {
         const KIB: u64 = 1024;
         const MIB: u64 = 1024 * KIB;
         const GIB: u64 = 1024 * MIB;

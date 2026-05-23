@@ -1,5 +1,6 @@
 use crate::config::Config;
 use crate::daemon::hopping::{decode_b64_key, HoppingEngine};
+use crate::ipc::server::{self, IpcResult};
 use crate::state::logger::Logger;
 use crate::state::ui::UiRenderer;
 use crate::sys::interface::InterfaceManager;
@@ -8,7 +9,8 @@ use crate::sys::routing::RoutingManager;
 use crate::sys::wg::WgManager;
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
+use tokio::io::AsyncWriteExt;
 use tokio::time;
 use wireguard_control::InterfaceName;
 
@@ -27,14 +29,21 @@ pub(crate) const WARP_PORTS: &[u16] = &[
 
 pub struct DaemonState {
     pub config: Config,
+    pub config_path: String,
     pub iface: InterfaceName,
+    pub iface_str: String,
     pub pool: Vec<SocketAddr>,
     pub current_endpoint: SocketAddr,
     pub hopping: HoppingEngine,
     pub prop_path: PathBuf,
+    pub pre_disable_since: Option<Instant>,
+    pub ipc_listener: Option<tokio::net::UnixListener>,
 }
 
-pub async fn init(config_path: &str) -> Option<DaemonState> {
+pub async fn init(
+    config_path: &str,
+    existing_listener: Option<tokio::net::UnixListener>,
+) -> Option<DaemonState> {
     let config = Config::load_and_verify(config_path).await.ok()?;
 
     let module_dir = Path::new("/data/adb/modules/WARP");
@@ -88,7 +97,32 @@ pub async fn init(config_path: &str) -> Option<DaemonState> {
     let prop_path = module_dir.join("module.prop");
 
     Logger::info("正在启动守护进程");
-    Some(DaemonState { config, iface, pool, current_endpoint: first_ep, hopping, prop_path })
+
+    let ipc_listener = match existing_listener {
+        Some(l) => l,
+        None => match server::start_listening().await {
+            Ok(l) => l,
+            Err(e) => {
+                Logger::fatal(&format!("无法启动信道: {e}"));
+                return None;
+            }
+        },
+    };
+
+    let iface_str = iface.to_string();
+
+    Some(DaemonState {
+        config,
+        config_path: config_path.to_string(),
+        iface,
+        iface_str,
+        pool,
+        current_endpoint: first_ep,
+        hopping,
+        prop_path,
+        pre_disable_since: None,
+        ipc_listener: Some(ipc_listener),
+    })
 }
 
 pub async fn run_loop(mut state: DaemonState) {
@@ -97,8 +131,42 @@ pub async fn run_loop(mut state: DaemonState) {
     let mut hopping_tick = time::interval(hopping_interval);
     let mut ui_tick = time::interval(ui_interval);
 
+    let listener = state.ipc_listener.take().expect("信道未初始化");
+
     loop {
+        let endpoint_str = state.current_endpoint.to_string();
         tokio::select! {
+            result = server::handle_next(
+                &listener,
+                &state.iface_str,
+                &state.config_path,
+                state.pre_disable_since,
+                &endpoint_str,
+                state.config.hopping.interval_sec,
+            ) => {
+                let (ipc_result, mut writer) = result;
+                match ipc_result {
+                    IpcResult::StartRequested => {
+                        Logger::error("守护进程已在运行");
+                    }
+                    IpcResult::DeinitRequested => {
+                        Logger::info("正在停用...");
+                        deinit(&state).await;
+                        if let Some(w) = writer.as_mut() {
+                            let _ = w.write_all(b"DONE\n").await;
+                        }
+                        break;
+                    }
+                    IpcResult::ActionCompleted => {
+                        if state.pre_disable_since.is_none() {
+                            state.pre_disable_since = Some(Instant::now());
+                            Logger::info("等待停用请求");
+                        }
+                    }
+                    IpcResult::StatsOnly | IpcResult::Error => {}
+                }
+            }
+
             _ = hopping_tick.tick() => {
                 if let Some(best) = state.hopping
                     .find_best(&state.pool, state.config.hopping.concurrent_tests).await
@@ -112,6 +180,13 @@ pub async fn run_loop(mut state: DaemonState) {
             }
 
             _ = ui_tick.tick() => {
+                if let Some(since) = state.pre_disable_since {
+                    if since.elapsed().as_secs() >= 5 {
+                        state.pre_disable_since = None;
+                        Logger::info("停用请求已过期");
+                    }
+                }
+
                 if MountManager::is_safe_tmpfs(&state.prop_path).unwrap_or(false) {
                     if let Ok(stats) = WgManager::get_stats(&state.iface) {
                         let hs = stats.last_handshake
@@ -132,6 +207,47 @@ pub async fn run_loop(mut state: DaemonState) {
             }
         }
     }
+}
+
+async fn deinit(state: &DaemonState) {
+    // 清理路由规则
+    let (rt_mgr, rt_conn) = match RoutingManager::new() {
+        Ok(v) => v,
+        Err(e) => {
+            Logger::error(&format!("无法创建路由管理器: {e}"));
+            return;
+        }
+    };
+    tokio::spawn(rt_conn);
+    if let Err(e) = rt_mgr.cleanup_rules().await {
+        Logger::error(&format!("清理路由失败: {e}"));
+    }
+
+    // 删除 WireGuard 接口
+    let (if_mgr, if_conn) = match InterfaceManager::new() {
+        Ok(v) => v,
+        Err(e) => {
+            Logger::error(&format!("无法创建接口管理器: {e}"));
+            return;
+        }
+    };
+    tokio::spawn(if_conn);
+    match if_mgr.get_index(&state.iface_str).await {
+        Ok(index) => {
+            if let Err(e) = if_mgr.delete(index).await {
+                Logger::error(&format!("删除接口失败: {e}"));
+            } else {
+                Logger::info("接口已删除");
+            }
+        }
+        Err(_) => Logger::warn("接口不存在，跳过删除"),
+    }
+
+    let _ = crate::prop::write_stopped(&state.prop_path).await;
+
+    let _ = tokio::fs::remove_file(server::SOCKET_PATH).await;
+
+    Logger::info("服务已停止");
 }
 
 fn build_endpoint_pool() -> Vec<SocketAddr> {
