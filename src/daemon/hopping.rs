@@ -6,7 +6,7 @@ use std::time::Duration;
 use tokio::net::UdpSocket;
 use tokio::time::Instant;
 
-pub(crate) const BYPASS_MARK: u32 = 0x114514;
+pub(crate) const BYPASS_MARK: u32 = 0x20000;
 
 #[derive(Debug)]
 pub struct ProbeOutcome {
@@ -118,6 +118,7 @@ impl HoppingEngine {
             let std_socket = std::net::UdpSocket::bind(bind_addr).ok()?;
             set_fwmark(&std_socket, BYPASS_MARK);
             std_socket.connect(endpoint).ok()?;
+            std_socket.set_nonblocking(true).ok()?;
             UdpSocket::from_std(std_socket).ok()?
         };
 

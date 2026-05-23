@@ -69,8 +69,8 @@ pub async fn init(
         }
     };
 
-    WgManager::check_kernel_support().ok()?;
-    let iface = WgManager::find_available_name().ok()?;
+    WgManager::check_kernel_support().await.ok()?;
+    let iface = WgManager::find_available_name().await.ok()?;
 
     let (if_mgr, conn) = InterfaceManager::new().ok()?;
     tokio::spawn(conn);
@@ -81,9 +81,9 @@ pub async fn init(
     if_mgr.add_ip(iface_index, &config.interface.ipv6).await.ok()?;
     if_mgr.set_up(iface_index).await.ok()?;
 
-    WgManager::apply_device_config(&iface, &config.interface.private_key, FWMARK, None).ok()?;
+    WgManager::apply_device_config(iface.clone(), config.interface.private_key.clone(), FWMARK, None).await.ok()?;
 
-    WgManager::set_peer(&iface, WARP_PEER_KEY, first_ep, 25).ok()?;
+    WgManager::set_peer(iface.clone(), WARP_PEER_KEY.to_string(), first_ep, 25).await.ok()?;
 
     let (rt_mgr, rt_conn) = RoutingManager::new().ok()?;
     tokio::spawn(rt_conn);
@@ -143,7 +143,7 @@ pub async fn run_loop(mut state: DaemonState) {
         tokio::select! {
             Some(best) = hop_rx.recv() => {
                 if best != state.current_endpoint {
-                    if WgManager::update_endpoint(&state.iface, WARP_PEER_KEY, best).is_ok() {
+                    if WgManager::update_endpoint(state.iface.clone(), WARP_PEER_KEY.to_string(), best).await.is_ok() {
                         state.current_endpoint = best;
                     }
                 }
@@ -203,7 +203,7 @@ pub async fn run_loop(mut state: DaemonState) {
                 }
 
                 if MountManager::is_safe_tmpfs(&state.prop_path).unwrap_or(false) {
-                    if let Ok(stats) = WgManager::get_stats(&state.iface) {
+                    if let Ok(stats) = WgManager::get_stats(state.iface.clone()).await {
                         let hs = stats.last_handshake
                             .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
                             .map(|d| d.as_secs())

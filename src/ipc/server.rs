@@ -54,7 +54,7 @@ pub async fn handle_next(
 
     match request.as_str() {
         "stats" => {
-            let text = read_stats(iface_name, current_endpoint, refresh_sec);
+            let text = read_stats(iface_name.to_string(), current_endpoint.to_string(), refresh_sec).await;
             let _ = writer.write_all(text.as_bytes()).await;
             (IpcResult::StatsOnly, None)
         }
@@ -104,7 +104,7 @@ async fn handle_action(
         return IpcResult::DeinitRequested;
     }
 
-    let stats_text = read_stats(iface_name, current_endpoint, refresh_sec);
+    let stats_text = read_stats(iface_name.to_string(), current_endpoint.to_string(), refresh_sec).await;
     let logs_text = show_unread_logs().await;
     let _ = writer.write_all(logs_text.as_bytes()).await;
     let _ = writer.write_all(stats_text.as_bytes()).await;
@@ -154,12 +154,15 @@ async fn show_unread_logs() -> String {
     output
 }
 
-fn read_stats(iface_name: &str, current_endpoint: &str, refresh_sec: u64) -> String {
+async fn read_stats(iface_name: String, current_endpoint: String, refresh_sec: u64) -> String {
     let iface: InterfaceName = match iface_name.parse() {
         Ok(n) => n,
         Err(_) => return String::new(),
     };
-    let device = match Device::get(&iface, Backend::Kernel) {
+    let device_res = tokio::task::spawn_blocking(move || {
+        Device::get(&iface, Backend::Kernel)
+    }).await.unwrap();
+    let device = match device_res {
         Ok(d) => d,
         Err(_) => return String::new(),
     };
