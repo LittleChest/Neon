@@ -54,18 +54,18 @@ impl HoppingEngine {
         while let Some(outcome) = probes.next().await {
             match outcome {
                 Some(o) => {
-                    crate::state::logger::Logger::info(&format!(
+                    println!(
                         "使用端点: {} (RTT {:.0}ms)",
                         o.endpoint,
                         o.rtt.as_secs_f64() * 1000.0
-                    ));
+                    );
                     return Some(o.endpoint);
                 }
                 None => continue,
             }
         }
 
-        crate::state::logger::Logger::warn("未找到可用端点");
+        eprintln!("未找到可用端点");
         None
     }
 
@@ -82,12 +82,12 @@ impl HoppingEngine {
             }
             while let Some(outcome) = probes.next().await {
                 if let Some(o) = outcome {
-                    crate::state::logger::Logger::info(&format!("使用端点: {}", o.endpoint));
+                    println!("使用端点: {}", o.endpoint);
                     return Some(o.endpoint);
                 }
             }
         }
-        crate::state::logger::Logger::warn("未找到可用端点");
+        eprintln!("未找到可用端点");
         None
     }
 
@@ -116,7 +116,7 @@ impl HoppingEngine {
 
         let t0 = Instant::now();
 
-        let hs_deadline = Instant::now() + Duration::from_secs(3);
+        let hs_deadline = Instant::now() + Duration::from_secs(5);
         let mut tx = [0u8; 2048];
         let mut rx = [0u8; 2048];
 
@@ -130,11 +130,10 @@ impl HoppingEngine {
 
         loop {
             if Instant::now() >= hs_deadline {
-                crate::state::logger::Logger::warn(&format!("握手超时: {}", endpoint));
                 return None;
             }
             let remaining = hs_deadline.saturating_duration_since(Instant::now());
-            let recv_timeout = remaining.min(Duration::from_millis(200));
+            let recv_timeout = remaining.min(Duration::from_millis(500));
             match tokio::time::timeout(recv_timeout, socket.recv(&mut rx)).await {
                 Ok(Ok(size)) => {
                     match tunnel.decapsulate(None, &rx[..size], &mut tx) {
@@ -164,15 +163,12 @@ impl HoppingEngine {
             }
         }
 
-        let icmp_deadline = Instant::now() + Duration::from_secs(2);
+        let icmp_deadline = Instant::now() + Duration::from_secs(5);
 
         let local_ip = match socket.local_addr() {
             Ok(addr) => match addr {
                 SocketAddr::V4(a) => *a.ip(),
-                _ => {
-                    crate::state::logger::Logger::warn(&format!("非 IPv4 地址: {}", endpoint));
-                    return None;
-                }
+                _ => return None,
             },
             Err(_) => return None,
         };
@@ -187,27 +183,19 @@ impl HoppingEngine {
         match tunnel.encapsulate(&plain_pkt[..pkt_len], &mut enc_pkt) {
             TunnResult::WriteToNetwork(pkt) => {
                 if socket.send(pkt).await.is_err() {
-                    crate::state::logger::Logger::warn(&format!("ICMP 发送失败: {}", endpoint));
                     return None;
                 }
             }
-            _ => {
-                crate::state::logger::Logger::warn(&format!("ICMP 封装失败: {}", endpoint));
-                return None;
-            }
+            _ => return None,
         }
 
         // 等待 ICMP echo reply（带重试）
         loop {
             if Instant::now() >= icmp_deadline {
-                crate::state::logger::Logger::warn(&format!(
-                    "ICMP 超时: {}",
-                    endpoint
-                ));
                 return None;
             }
             let remaining = icmp_deadline.saturating_duration_since(Instant::now());
-            let recv_timeout = remaining.min(Duration::from_millis(300));
+            let recv_timeout = remaining.min(Duration::from_millis(500));
             match tokio::time::timeout(recv_timeout, socket.recv(&mut rx)).await {
                 Ok(Ok(size)) => {
                     match tunnel.decapsulate(None, &rx[..size], &mut tx) {
