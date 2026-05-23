@@ -37,24 +37,21 @@ fn main() {
                     }
                 });
             } else {
-                // 确保配置文件存在（同步，fork 前）
                 {
                     let p = std::path::Path::new(config_path);
                     if !p.exists() {
                         if let Some(parent) = p.parent() {
                             let _ = std::fs::create_dir_all(parent);
                         }
-                        let _ = std::fs::write(p, include_str!("../config.default.toml"));
+                        let _ = std::fs::write(p, crate::config::Config::default_toml());
                     }
                 }
 
-                // fork：子进程成为后台 daemon，父进程作为客户端 tail 日志
                 match unsafe { libc::fork() } {
                     -1 => {
                         eprintln!("- [!] fork 失败");
                     }
                     0 => {
-                        // === 子进程：成为 daemon ===
                         unsafe { libc::setsid(); }
                         unsafe {
                             libc::close(0); // stdin
@@ -71,7 +68,6 @@ fn main() {
                         unsafe { libc::_exit(0); }
                     }
                     _ => {
-                        // === 父进程：客户端 tail 日志 ===
                         std::thread::sleep(std::time::Duration::from_millis(200));
                         rt.block_on(async {
                             if let Err(e) = crate::ipc::client::run_start().await {
