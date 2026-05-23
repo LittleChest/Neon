@@ -42,11 +42,19 @@ impl MountManager {
             if !dir.exists() {
                 fs::create_dir_all(dir).await?;
             }
-            let _ = Self::unmount_path(dir);
-            Self::mount_tmpfs(dir, 4)?;
-            
-            if !Self::is_safe_tmpfs(dir)? {
-                return Err(io::Error::new(io::ErrorKind::Other, format!("Fatal: Failed to verify tmpfs on {:?}", dir)));
+
+            let needs_mount = if let Some(parent) = dir.parent() {
+                !Self::is_safe_tmpfs(parent).unwrap_or(false)
+            } else {
+                true
+            };
+
+            if needs_mount {
+                let _ = Self::unmount_path(dir);
+                Self::mount_tmpfs(dir, 4)?;
+                if !Self::is_safe_tmpfs(dir)? {
+                    return Err(io::Error::new(io::ErrorKind::Other, format!("无法验证 tmpfs: {:?}", dir)));
+                }
             }
         }
 
@@ -66,18 +74,15 @@ impl MountManager {
 
             if !Self::is_safe_tmpfs(&real_prop)? {
                 let _ = Self::unmount_path(&real_prop);
-                return Err(io::Error::new(io::ErrorKind::Other, "Fatal: module.prop bind mount failed tmpfs verification. NAND protection active."));
+                return Err(io::Error::new(io::ErrorKind::Other, "无法挂载 module.prop"));
             }
         }
         Ok(())
     }
 
-    pub async fn cleanup_magisk_env(module_dir: &Path, memory_dirs: &[&Path]) -> io::Result<()> {
+    pub async fn cleanup_magisk_env(module_dir: &Path) -> io::Result<()> {
         let real_prop = module_dir.join("module.prop");
         let _ = Self::unmount_path(&real_prop);
-        for &dir in memory_dirs {
-            let _ = Self::unmount_path(dir);
-        }
         Ok(())
     }
 }

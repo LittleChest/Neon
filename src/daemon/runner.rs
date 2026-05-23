@@ -251,6 +251,9 @@ async fn deinit(state: &DaemonState) {
 
     let _ = crate::prop::write_stopped(&state.prop_path).await;
 
+    let module_dir = Path::new("/data/adb/modules/WARP");
+    let _ = MountManager::cleanup_magisk_env(module_dir).await;
+
     let _ = tokio::fs::remove_file(server::SOCKET_PATH).await;
 
     Logger::info("服务已停止");

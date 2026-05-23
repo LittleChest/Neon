@@ -83,9 +83,4 @@ impl Logger {
         eprintln!("{entry}");
         Self::append_line(&entry);
     }
-
-    pub fn has_issues() -> bool {
-        let state = Self::inner().state.read().unwrap();
-        state.fatal.is_some() || state.error_count > 0 || state.warning_count > 0
-    }
 }
