@@ -1092,6 +1092,7 @@ dependencies = [
  "rtnetlink",
  "rustix",
  "serde",
+ "socket2",
  "tokio",
  "toml",
  "wireguard-control",
