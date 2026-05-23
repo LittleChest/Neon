@@ -52,19 +52,34 @@ fn main() {
                     }
                     0 => {
                         unsafe { libc::setsid(); }
-                        unsafe {
-                            libc::close(0); // stdin
-                            libc::close(1); // stdout
-                            libc::close(2); // stderr
-                        }
-                        let child_rt = tokio::runtime::Builder::new_current_thread()
-                            .enable_all().build().expect("子进程运行时失败");
-                        child_rt.block_on(async {
-                            if let Some(state) = crate::daemon::runner::init(config_path, None).await {
-                                crate::daemon::runner::run_loop(state).await;
+                        
+                        match unsafe { libc::fork() } {
+                            -1 => { unsafe { libc::_exit(1); } }
+                            0 => {
+                                unsafe {
+                                    let fd = libc::open(c"/dev/null".as_ptr(), libc::O_RDWR);
+                                    if fd >= 0 {
+                                        libc::dup2(fd, 0); // stdin
+                                        libc::dup2(fd, 1); // stdout
+                                        libc::dup2(fd, 2); // stderr
+                                        if fd > 2 { libc::close(fd); }
+                                    }
+                                }
+                                
+                                let child_rt = tokio::runtime::Builder::new_current_thread()
+                                    .enable_all().build().expect("子进程运行时失败");
+                                
+                                child_rt.block_on(async {
+                                    if let Some(state) = crate::daemon::runner::init(config_path, None).await {
+                                        crate::daemon::runner::run_loop(state).await;
+                                    }
+                                });
+                                unsafe { libc::_exit(0); }
                             }
-                        });
-                        unsafe { libc::_exit(0); }
+                            _ => {
+                                unsafe { libc::_exit(0); } 
+                            } 
+                        }
                     }
                     _ => {
                         rt.block_on(crate::ipc::client::run_start());
