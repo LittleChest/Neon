@@ -6,6 +6,8 @@ use std::time::Duration;
 use tokio::net::UdpSocket;
 use tokio::time::{timeout, Instant};
 
+const BYPASS_MARK: u32 = 0x114514;
+
 #[derive(Debug)]
 pub struct ProbeOutcome {
     pub endpoint: SocketAddr,
@@ -69,6 +71,24 @@ impl HoppingEngine {
         None
     }
 
+    pub async fn find_first(&self, endpoints: &[SocketAddr]) -> Option<SocketAddr> {
+        if endpoints.is_empty() {
+            return None;
+        }
+        let mut probes = FuturesUnordered::new();
+        for &ep in endpoints {
+            probes.push(self.probe_one(ep));
+        }
+        while let Some(outcome) = probes.next().await {
+            if let Some(o) = outcome {
+                crate::state::logger::Logger::info(&format!("使用端点: {}", o.endpoint));
+                return Some(o.endpoint);
+            }
+        }
+        crate::state::logger::Logger::warn("未找到可用端点");
+        None
+    }
+
     pub async fn probe_one(&self, endpoint: SocketAddr) -> Option<ProbeOutcome> {
         let mut tunnel = Tunn::new(
             self.private_key.clone(),
@@ -85,8 +105,12 @@ impl HoppingEngine {
             "[::]:0"
         };
 
-        let socket = UdpSocket::bind(bind_addr).await.ok()?;
-        socket.connect(endpoint).await.ok()?;
+        let socket = {
+            let std_socket = std::net::UdpSocket::bind(bind_addr).ok()?;
+            set_fwmark(&std_socket, BYPASS_MARK);
+            std_socket.connect(endpoint).ok()?;
+            UdpSocket::from_std(std_socket).ok()?
+        };
 
         let t0 = Instant::now();
         let result = timeout(self.probe_timeout, do_handshake(&mut tunnel, &socket)).await;
@@ -166,6 +190,23 @@ pub fn decode_b64_key(b64: &str) -> Result<[u8; 32], String> {
     key.copy_from_slice(&buf[..32]);
     Ok(key)
 }
+
+#[cfg(any(target_os = "linux", target_os = "android"))]
+fn set_fwmark(socket: &std::net::UdpSocket, mark: u32) {
+    use std::os::unix::io::AsRawFd;
+    unsafe {
+        libc::setsockopt(
+            socket.as_raw_fd(),
+            libc::SOL_SOCKET,
+            libc::SO_MARK,
+            &mark as *const u32 as *const libc::c_void,
+            std::mem::size_of_val(&mark) as libc::socklen_t,
+        );
+    }
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "android")))]
+fn set_fwmark(_: &std::net::UdpSocket, _: u32) {}
 
 pub async fn run_test(engine: &HoppingEngine, ports: &[u16], ip_range: &[u8; 4], ip_count: u8) {
     use std::collections::hash_map::RandomState;

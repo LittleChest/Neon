@@ -1086,6 +1086,7 @@ dependencies = [
  "boringtun",
  "futures",
  "ipnet",
+ "libc",
  "netlink-packet-route 0.30.0",
  "rtnetlink",
  "rustix",

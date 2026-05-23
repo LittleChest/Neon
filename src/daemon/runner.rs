@@ -59,7 +59,19 @@ pub async fn init(config_path: &str) -> Option<DaemonState> {
     WgManager::apply_device_config(&iface, &config.interface.private_key, FWMARK, None).ok()?;
 
     let pool = build_endpoint_pool();
-    let first_ep = pool[0];
+
+    let pk = decode_b64_key(&config.interface.private_key).ok()?;
+    let pubk = decode_b64_key(WARP_PEER_KEY).ok()?;
+    let hopping = HoppingEngine::new(pk, pubk, None, Duration::from_secs(5));
+
+    let first_ep = match hopping.find_first(&pool).await {
+        Some(ep) => ep,
+        None => {
+            Logger::warn("未找到可用端点");
+            pool[0]
+        }
+    };
+
     WgManager::set_peer(&iface, WARP_PEER_KEY, first_ep, 25).ok()?;
 
     let (rt_mgr, rt_conn) = RoutingManager::new().ok()?;
@@ -73,9 +85,6 @@ pub async fn init(config_path: &str) -> Option<DaemonState> {
         WARP_TABLE, 0, FWMARK,
     ).await.ok()?;
 
-    let pk = decode_b64_key(&config.interface.private_key).ok()?;
-    let pubk = decode_b64_key(WARP_PEER_KEY).ok()?;
-    let hopping = HoppingEngine::new(pk, pubk, None, Duration::from_secs(5));
     let prop_path = module_dir.join("module.prop");
 
     Logger::info("正在启动守护进程");
