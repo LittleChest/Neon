@@ -71,6 +71,32 @@ impl RoutingManager {
         Ok(())
     }
 
+    // ip rule add fwmark <mark> goto <target> prio <priority>
+    async fn add_fwmark_goto_rule(
+        &self,
+        mark: u32,
+        priority: u32,
+        target: u32,
+    ) -> io::Result<()> {
+        for family in [AddressFamily::Inet, AddressFamily::Inet6] {
+            let mut req = self.handle.rule().add();
+            req.message_mut().header.family = family;
+            req.message_mut()
+                .attributes
+                .push(RuleAttribute::FwMark(mark));
+            req.message_mut()
+                .attributes
+                .push(RuleAttribute::Goto(target));
+            req = req.action(RuleAction::Goto).priority(priority);
+
+            req.execute().await.map_err(|e| {
+                Logger::error(&format!("无法添加 fwmark goto 规则 0x{mark:x}: {e}"));
+                io::Error::new(io::ErrorKind::Other, e)
+            })?;
+        }
+        Ok(())
+    }
+
     // ip rule add to <cidr> goto <target> prio <priority>
     async fn add_goto_rule(&self, cidr: &IpNet, target: u32, priority: u32) -> io::Result<()> {
         let mut req = self.handle.rule().add();
@@ -127,12 +153,13 @@ impl RoutingManager {
     }
 
     //   0. Android
-    //   1. must_proxy  → lookup <table>
-    //   2. Android VPN
-    //   3. must_bypass → goto <target>
-    //   4. rules_ips
-    //   5. fwmark → lookup <table> (Only blacklist mode)
-    //   6. Android
+    //   1. Bypass Hopping & Test
+    //   2. must_proxy  → lookup <table>
+    //   3. Android VPN
+    //   4. must_bypass → goto <target>
+    //   5. rules_ips
+    //   6. fwmark → lookup <table> (Only blacklist mode)
+    //   7. Android
     pub async fn apply_rules(
         &self,
         must_proxy: &[IpNet],
@@ -142,12 +169,17 @@ impl RoutingManager {
         table_id: u32,
         fwmark: u32,
         fwmask: u32,
+        bypass_mark: u32,
     ) -> io::Result<()> {
+        const PRIO_BYPASS_MARK: u32 = 11500;
         const PRIO_PROXY: u32 = 30500;
         const PRIO_BYPASS: u32 = 30600;
         const PRIO_LIST: u32 = 30700;
         const PRIO_FWMARK: u32 = 30999;
         const GOTO_TARGET: u32 = 31000;
+
+        self.add_fwmark_goto_rule(bypass_mark, PRIO_BYPASS_MARK, GOTO_TARGET).await?;
+        Logger::info(&format!("已注入 Neon 绕过规则 0x{bypass_mark:x} (prio {PRIO_BYPASS_MARK})"));
 
         for cidr in must_proxy {
             self.add_lookup_rule(cidr, table_id, PRIO_PROXY).await?;
@@ -195,7 +227,7 @@ impl RoutingManager {
     pub async fn cleanup_rules(&self) -> io::Result<()> {
         Logger::info("正在清理路由规则");
 
-        const OUR_PRIOS: &[u32] = &[30500, 30600, 30700, 30999];
+        const OUR_PRIOS: &[u32] = &[11500, 30500, 30600, 30700, 30999];
         let mut deleted = 0u32;
 
         for ip_ver in [IpVersion::V4, IpVersion::V6] {

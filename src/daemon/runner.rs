@@ -55,6 +55,20 @@ pub async fn init(
 
     let _ = tokio::fs::remove_file("/data/adb/modules/WARP/disable").await;
 
+    let pool = build_endpoint_pool();
+    let pk = decode_b64_key(&config.interface.private_key).ok()?;
+    let pubk = decode_b64_key(WARP_PEER_KEY).ok()?;
+    let hopping = std::sync::Arc::new(HoppingEngine::new(pk, pubk, None));
+
+    Logger::info("正在探测可用端点...");
+    let first_ep = match hopping.find_first(&pool, config.hopping.concurrent_tests).await {
+        Some(ep) => ep,
+        None => {
+            Logger::warn("未找到可用端点");
+            pool[0]
+        }
+    };
+
     WgManager::check_kernel_support().ok()?;
     let iface = WgManager::find_available_name().ok()?;
 
@@ -69,20 +83,6 @@ pub async fn init(
 
     WgManager::apply_device_config(&iface, &config.interface.private_key, FWMARK, None).ok()?;
 
-    let pool = build_endpoint_pool();
-
-    let pk = decode_b64_key(&config.interface.private_key).ok()?;
-    let pubk = decode_b64_key(WARP_PEER_KEY).ok()?;
-    let hopping = std::sync::Arc::new(HoppingEngine::new(pk, pubk, None));
-
-    let first_ep = match hopping.find_first(&pool, config.hopping.concurrent_tests).await {
-        Some(ep) => ep,
-        None => {
-            Logger::warn("未找到可用端点");
-            pool[0]
-        }
-    };
-
     WgManager::set_peer(&iface, WARP_PEER_KEY, first_ep, 25).ok()?;
 
     let (rt_mgr, rt_conn) = RoutingManager::new().ok()?;
@@ -94,6 +94,7 @@ pub async fn init(
         &config.routing.rules_ips,
         config.routing.is_whitelist,
         WARP_TABLE, 0, FWMARK,
+        crate::daemon::hopping::BYPASS_MARK,
     ).await.ok()?;
 
     let prop_path = module_dir.join("module.prop");

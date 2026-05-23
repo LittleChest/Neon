@@ -6,7 +6,7 @@ use std::time::Duration;
 use tokio::net::UdpSocket;
 use tokio::time::Instant;
 
-const BYPASS_MARK: u32 = 0x114514;
+pub(crate) const BYPASS_MARK: u32 = 0x114514;
 
 #[derive(Debug)]
 pub struct ProbeOutcome {
