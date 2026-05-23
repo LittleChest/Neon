@@ -73,7 +73,7 @@ pub async fn init(
     let pubk = decode_b64_key(WARP_PEER_KEY).ok()?;
     let hopping = HoppingEngine::new(pk, pubk, None);
 
-    let first_ep = match hopping.find_first(&pool).await {
+    let first_ep = match hopping.find_first(&pool, config.hopping.concurrent_tests).await {
         Some(ep) => ep,
         None => {
             Logger::warn("未找到可用端点");

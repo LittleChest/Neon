@@ -39,11 +39,12 @@ impl HoppingEngine {
         concurrent: usize,
     ) -> Option<SocketAddr> {
         let count = if concurrent == 0 { 1 } else { concurrent };
-        let candidates: Vec<_> = endpoints.iter().take(count).copied().collect();
-
-        if candidates.is_empty() {
+        let count = count.min(endpoints.len());
+        if count == 0 {
             return None;
         }
+
+        let candidates = random_sample(endpoints, count);
 
         let mut probes = FuturesUnordered::new();
         for ep in candidates {
@@ -54,7 +55,7 @@ impl HoppingEngine {
             match outcome {
                 Some(o) => {
                     crate::state::logger::Logger::info(&format!(
-                        "计划使用端点: {} (RTT {:.0}ms)",
+                        "使用端点: {} (RTT {:.0}ms)",
                         o.endpoint,
                         o.rtt.as_secs_f64() * 1000.0
                     ));
@@ -68,18 +69,22 @@ impl HoppingEngine {
         None
     }
 
-    pub async fn find_first(&self, endpoints: &[SocketAddr]) -> Option<SocketAddr> {
+    pub async fn find_first(&self, endpoints: &[SocketAddr], batch_size: usize) -> Option<SocketAddr> {
         if endpoints.is_empty() {
             return None;
         }
-        let mut probes = FuturesUnordered::new();
-        for &ep in endpoints {
-            probes.push(self.probe(ep));
-        }
-        while let Some(outcome) = probes.next().await {
-            if let Some(o) = outcome {
-                crate::state::logger::Logger::info(&format!("使用端点: {}", o.endpoint));
-                return Some(o.endpoint);
+        let batch = if batch_size == 0 { 1 } else { batch_size };
+
+        for chunk in endpoints.chunks(batch) {
+            let mut probes = FuturesUnordered::new();
+            for &ep in chunk {
+                probes.push(self.probe(ep));
+            }
+            while let Some(outcome) = probes.next().await {
+                if let Some(o) = outcome {
+                    crate::state::logger::Logger::info(&format!("使用端点: {}", o.endpoint));
+                    return Some(o.endpoint);
+                }
             }
         }
         crate::state::logger::Logger::warn("未找到可用端点");
@@ -319,6 +324,25 @@ pub fn decode_b64_key(b64: &str) -> Result<[u8; 32], String> {
     let mut key = [0u8; 32];
     key.copy_from_slice(&buf[..32]);
     Ok(key)
+}
+
+fn random_sample<T: Copy>(items: &[T], n: usize) -> Vec<T> {
+    use std::collections::hash_map::RandomState;
+    use std::hash::{BuildHasher, Hasher};
+
+    let len = items.len();
+    let n = n.min(len);
+    let mut indices: Vec<usize> = (0..len).collect();
+
+    let seed = RandomState::new().build_hasher().finish();
+    let mut r = seed;
+    for i in 0..n {
+        r = r.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        let j = i + (r as usize) % (len - i);
+        indices.swap(i, j);
+    }
+
+    indices[..n].iter().map(|&i| items[i]).collect()
 }
 
 #[cfg(any(target_os = "linux", target_os = "android"))]
