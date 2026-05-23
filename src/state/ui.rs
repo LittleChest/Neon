@@ -35,7 +35,6 @@ impl UiRenderer {
         rx: u64,
         last_hs_secs: u64,
         current_endpoint: &str,
-        next_refresh_secs: u64,
     ) -> std::io::Result<()> {
         let tx_str = Self::human_readable(tx);
         let rx_str = Self::human_readable(rx);
@@ -44,14 +43,17 @@ impl UiRenderer {
 
         let description = Logger::read_state(|state| {
             if let Some(fatal_msg) = &state.fatal {
-                return format!("⛔ {}", fatal_msg);
+                return format!("❌ {}", fatal_msg);
             }
             let mut base = format!(
-                "🌐 传输: [↑{} ↓{}] | 🤝 上次握手: {} | ⚡ 端点: {} | 🕗 下次刷新: {} 秒后",
-                tx_str, rx_str, hs_str, current_endpoint, next_refresh_secs
+                "🌐 传输: [↑{} ↓{}] | 🤝 上次握手: {} | ⚡ 端点: {}",
+                tx_str, rx_str, hs_str, current_endpoint
             );
-            if state.error_count > 0 { base.push_str(&format!(" | ❌ {} 错误", state.error_count)); }
-            if state.warning_count > 0 { base.push_str(&format!(" | ⚠️ {} 警告", state.warning_count)); }
+            if state.error_count > 0 {
+                base.push_str(&format!(" | ❌ {} 个错误，{} 个警告", state.error_count, state.warning_count));
+            } else if state.warning_count > 0 {
+                base.push_str(&format!(" | ⚠️ {} 个警告", state.warning_count));
+            }
             base
         });
 

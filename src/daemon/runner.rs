@@ -268,7 +268,6 @@ pub async fn run_loop(mut state: DaemonState) {
                             stats.rx_bytes,
                             hs,
                             &state.current_endpoint.to_string(),
-                            hopping_interval.as_secs(),
                         ).await;
                     }
                 }
