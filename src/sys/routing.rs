@@ -25,7 +25,7 @@ impl RoutingManager {
 
     // ip rule add to <cidr> lookup <table> prio <priority>
     async fn add_lookup_rule(&self, cidr: &IpNet, table: u32, priority: u32) -> io::Result<()> {
-        let mut req = self.handle.rule().add();
+        let mut req = self.handle.rule().add().replace();
         set_rule_dst(&mut req, cidr);
         req = req
             .table_id(table)
@@ -47,7 +47,7 @@ impl RoutingManager {
         priority: u32,
     ) -> io::Result<()> {
         for family in [AddressFamily::Inet, AddressFamily::Inet6] {
-            let mut req = self.handle.rule().add();
+            let mut req = self.handle.rule().add().replace();
             req.message_mut().header.family = family;
             req.message_mut()
                 .attributes
@@ -79,7 +79,7 @@ impl RoutingManager {
         target: u32,
     ) -> io::Result<()> {
         for family in [AddressFamily::Inet, AddressFamily::Inet6] {
-            let mut req = self.handle.rule().add();
+            let mut req = self.handle.rule().add().replace();
             req.message_mut().header.family = family;
             req.message_mut()
                 .attributes
@@ -99,7 +99,7 @@ impl RoutingManager {
 
     // ip rule add to <cidr> goto <target> prio <priority>
     async fn add_goto_rule(&self, cidr: &IpNet, target: u32, priority: u32) -> io::Result<()> {
-        let mut req = self.handle.rule().add();
+        let mut req = self.handle.rule().add().replace();
         set_rule_dst(&mut req, cidr);
         req.message_mut()
             .attributes
