@@ -144,25 +144,22 @@ async fn do_handshake(tunnel: &mut Tunn, socket: &UdpSocket) -> bool {
         if Instant::now() > deadline {
             return false;
         }
-
-        let read_timeout = Duration::from_millis(200);
-
-        match timeout(read_timeout, socket.recv(&mut rx)).await {
+        match timeout(Duration::from_millis(200), socket.recv(&mut rx)).await {
             Ok(Ok(size)) => {
                 match tunnel.decapsulate(None, &rx[..size], &mut tx) {
                     TunnResult::WriteToNetwork(pkt) => {
                         let _ = socket.send(pkt).await;
                         if size == 92 && rx[0] == 2 {
-                            return true;
+                            break;
                         }
                     }
                     TunnResult::Done => {
                         if size == 92 && rx[0] == 2 {
-                            return true;
+                            break;
                         }
                     }
                     TunnResult::WriteToTunnelV4(_, _) | TunnResult::WriteToTunnelV6(_, _) => {
-                        return true;
+                        break;
                     }
                     _ => {}
                 }
@@ -175,6 +172,134 @@ async fn do_handshake(tunnel: &mut Tunn, socket: &UdpSocket) -> bool {
             }
         }
     }
+
+    let local_ip = match socket.local_addr() {
+        Ok(addr) => match addr {
+            SocketAddr::V4(a) => *a.ip(),
+            _ => return true,
+        },
+        Err(_) => return true,
+    };
+    let dst_ip = std::net::Ipv4Addr::new(1, 1, 1, 1); // Cloudflare DNS，几乎总是可达
+
+    let mut plain_pkt = [0u8; 256];
+    let mut enc_pkt = [0u8; 256];
+    let ident = 0x4E4F_u16; // NO Neon
+    let seq = 1u16;
+
+    let pkt_len = build_echo_request(local_ip, dst_ip, 64, seq, ident, &mut plain_pkt);
+
+    match tunnel.encapsulate(&plain_pkt[..pkt_len], &mut enc_pkt) {
+        TunnResult::WriteToNetwork(pkt) => {
+            let _ = socket.send(pkt).await;
+        }
+        _ => return true,
+    }
+
+    loop {
+        if Instant::now() > deadline {
+            return false;
+        }
+        match timeout(Duration::from_millis(300), socket.recv(&mut rx)).await {
+            Ok(Ok(size)) => {
+                match tunnel.decapsulate(None, &rx[..size], &mut tx) {
+                    TunnResult::WriteToTunnelV4(pkt, _) => {
+                        if let Some((r_ident, r_seq)) = parse_icmp_reply(pkt) {
+                            if r_ident == ident && r_seq == seq {
+                                return true;
+                            }
+                        }
+                    }
+                    TunnResult::WriteToNetwork(pkt) => {
+                        let _ = socket.send(pkt).await;
+                    }
+                    _ => {}
+                }
+            }
+            Ok(Err(_)) => return false,
+            Err(_) => {
+                match tunnel.encapsulate(&plain_pkt[..pkt_len], &mut enc_pkt) {
+                    TunnResult::WriteToNetwork(pkt) => {
+                        let _ = socket.send(pkt).await;
+                    }
+                    _ => {}
+                }
+                if let TunnResult::WriteToNetwork(pkt) = tunnel.update_timers(&mut tx) {
+                    let _ = socket.send(pkt).await;
+                }
+            }
+        }
+    }
+}
+
+fn calculate_checksum(data: &[u8]) -> u16 {
+    let mut sum = 0u32;
+    for chunk in data.chunks(2) {
+        let word = if chunk.len() == 2 {
+            u16::from_be_bytes([chunk[0], chunk[1]])
+        } else {
+            (chunk[0] as u16) << 8
+        };
+        sum += word as u32;
+    }
+    while sum >> 16 != 0 {
+        sum = (sum & 0xffff) + (sum >> 16);
+    }
+    !(sum as u16)
+}
+
+fn build_echo_request(
+    src: std::net::Ipv4Addr,
+    dst: std::net::Ipv4Addr,
+    ttl: u8,
+    seq: u16,
+    ident: u16,
+    out: &mut [u8],
+) -> usize {
+    // ICMP header (20..84)
+    let icmp = &mut out[20..84];
+    icmp[0] = 8; // Echo Request
+    icmp[1] = 0;
+    icmp[2..4].copy_from_slice(&0u16.to_be_bytes()); // checksum placeholder
+    icmp[4..6].copy_from_slice(&ident.to_be_bytes());
+    icmp[6..8].copy_from_slice(&seq.to_be_bytes());
+    for i in 0..56 {
+        icmp[8 + i] = i as u8;
+    }
+    let icmp_cksum = calculate_checksum(icmp);
+    icmp[2..4].copy_from_slice(&icmp_cksum.to_be_bytes());
+
+    // IPv4 header (0..20)
+    out[0] = 0x45; // version + IHL
+    out[1] = 0;
+    out[2..4].copy_from_slice(&84u16.to_be_bytes());
+    out[4..6].copy_from_slice(&0u16.to_be_bytes());
+    out[6..8].copy_from_slice(&0u16.to_be_bytes());
+    out[8] = ttl;
+    out[9] = 1; // ICMP protocol
+    out[10..12].copy_from_slice(&0u16.to_be_bytes()); // checksum placeholder
+    out[12..16].copy_from_slice(&src.octets());
+    out[16..20].copy_from_slice(&dst.octets());
+    let ip_cksum = calculate_checksum(&out[..20]);
+    out[10..12].copy_from_slice(&ip_cksum.to_be_bytes());
+    84
+}
+
+fn parse_icmp_reply(pkt: &[u8]) -> Option<(u16, u16)> {
+    if pkt.len() < 28 {
+        return None;
+    }
+    let ihl = (pkt[0] & 0x0f) as usize * 4;
+    if pkt.len() < ihl + 8 {
+        return None;
+    }
+    // ICMP type 0 = Echo Reply
+    if pkt[ihl] != 0 {
+        return None;
+    }
+    let ident = u16::from_be_bytes([pkt[ihl + 4], pkt[ihl + 5]]);
+    let seq = u16::from_be_bytes([pkt[ihl + 6], pkt[ihl + 7]]);
+    Some((ident, seq))
 }
 
 pub fn decode_b64_key(b64: &str) -> Result<[u8; 32], String> {
@@ -204,9 +329,6 @@ fn set_fwmark(socket: &std::net::UdpSocket, mark: u32) {
         );
     }
 }
-
-#[cfg(not(any(target_os = "linux", target_os = "android")))]
-fn set_fwmark(_: &std::net::UdpSocket, _: u32) {}
 
 pub async fn run_test(engine: &HoppingEngine, ports: &[u16], ip_range: &[u8; 4], ip_count: u8) {
     use std::collections::hash_map::RandomState;
@@ -263,4 +385,3 @@ pub async fn run_test(engine: &HoppingEngine, ports: &[u16], ip_range: &[u8; 4],
         }
     }
 }
-
