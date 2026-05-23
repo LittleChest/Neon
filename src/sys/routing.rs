@@ -171,14 +171,18 @@ impl RoutingManager {
         fwmask: u32,
         bypass_mark: u32,
     ) -> io::Result<()> {
-        const PRIO_BYPASS_MARK: u32 = 11500;
+        const PRIO_BYPASS_VPN_MARK: u32 = 12500;
+        const PRIO_BYPASS_MARK: u32 = 30100;
         const PRIO_PROXY: u32 = 30500;
         const PRIO_BYPASS: u32 = 30600;
         const PRIO_LIST: u32 = 30700;
         const PRIO_FWMARK: u32 = 30999;
+        const GOTO_AFTER_VPN_TARGET: u32 = 15040;
         const GOTO_TARGET: u32 = 31000;
 
+        self.add_fwmark_goto_rule(bypass_mark, PRIO_BYPASS_VPN_MARK, GOTO_AFTER_VPN_TARGET).await?;
         self.add_fwmark_goto_rule(bypass_mark, PRIO_BYPASS_MARK, GOTO_TARGET).await?;
+        Logger::info(&format!("已注入 VPN 绕过规则 0x{bypass_mark:x} (prio {PRIO_BYPASS_VPN_MARK})"));
         Logger::info(&format!("已注入 Neon 绕过规则 0x{bypass_mark:x} (prio {PRIO_BYPASS_MARK})"));
 
         for cidr in must_proxy {

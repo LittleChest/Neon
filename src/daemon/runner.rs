@@ -61,7 +61,7 @@ pub async fn init(
     let hopping = std::sync::Arc::new(HoppingEngine::new(pk, pubk, None));
 
     Logger::info("正在探测可用端点...");
-    let first_ep = match hopping.find_first(&pool, config.hopping.concurrent_tests, config.hopping.wait_sec).await {
+    let first_ep = match hopping.pick_initial(&pool, config.hopping.concurrent_tests).await {
         Some(ep) => ep,
         None => {
             Logger::warn("未找到可用端点");

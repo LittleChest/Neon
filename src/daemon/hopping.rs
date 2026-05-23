@@ -68,26 +68,33 @@ impl HoppingEngine {
         }
     }
 
-    pub async fn find_first(&self, endpoints: &[SocketAddr], concurrent: usize, wait_sec: u64) -> Option<SocketAddr> {
+    pub async fn pick_initial(&self, endpoints: &[SocketAddr], max_probes: usize) -> Option<SocketAddr> {
         if endpoints.is_empty() {
             return None;
         }
-        let count = if concurrent == 0 { 1 } else { concurrent };
+        let count = if max_probes == 0 { 1 } else { max_probes };
 
-        loop {
-            let candidates = random_sample(endpoints, count);
-            let mut probes = FuturesUnordered::new();
-            for ep in candidates {
-                probes.push(self.probe(ep));
+        let candidates = random_sample(endpoints, count);
+        let mut probes = FuturesUnordered::new();
+        for ep in candidates {
+            probes.push(self.probe(ep));
+        }
+
+        let mut working: Vec<SocketAddr> = Vec::new();
+        while let Some(outcome) = probes.next().await {
+            if let Some(o) = outcome {
+                working.push(o.endpoint);
             }
-            while let Some(outcome) = probes.next().await {
-                if let Some(o) = outcome {
-                    println!("使用端点: {}", o.endpoint);
-                    return Some(o.endpoint);
-                }
-            }
-            println!("等待 {wait_sec} 秒后重试...");
-            tokio::time::sleep(Duration::from_secs(wait_sec)).await;
+        }
+
+        if working.is_empty() {
+            let fallback = random_sample(endpoints, 1)[0];
+            println!("未找到可用端点，使用: {fallback}");
+            Some(fallback)
+        } else {
+            let pick = random_sample(&working, 1)[0];
+            println!("从 {} 个可用端点中选择: {pick}", working.len());
+            Some(pick)
         }
     }
 
