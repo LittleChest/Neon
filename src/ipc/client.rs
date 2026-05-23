@@ -24,10 +24,10 @@ async fn try_start() -> io::Result<()> {
 
     while let Ok(Some(line)) = lines.next_line().await {
         if line == "DONE" {
-            done.store(true, Ordering::Relaxed);
             break;
         }
     }
+    done.store(true, Ordering::Relaxed);
     let _ = tail.await;
     Ok(())
 }
@@ -57,10 +57,10 @@ async fn try_action() -> io::Result<()> {
                 let tail = tokio::spawn(tail_log(crate::LOG_FILE.to_string(), done.clone()));
                 while let Ok(Some(line)) = lines.next_line().await {
                     if line == "DONE" {
-                        done.store(true, Ordering::Relaxed);
                         break;
                     }
                 }
+                done.store(true, Ordering::Relaxed);
                 let _ = tail.await;
                 break;
             }

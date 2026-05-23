@@ -55,6 +55,17 @@ pub async fn init(
 
     let _ = tokio::fs::remove_file("/data/adb/modules/WARP/disable").await;
 
+    let ipc_listener = match existing_listener {
+        Some(l) => l,
+        None => match server::start_listening().await {
+            Ok(l) => l,
+            Err(e) => {
+                Logger::fatal(&format!("无法启动信道: {e}"));
+                return None;
+            }
+        },
+    };
+
     let pool = build_endpoint_pool();
     let pk = decode_b64_key(&config.interface.private_key).ok()?;
     let pubk = decode_b64_key(WARP_PEER_KEY).ok()?;
@@ -101,16 +112,7 @@ pub async fn init(
 
     Logger::info("正在启动守护进程");
 
-    let ipc_listener = match existing_listener {
-        Some(l) => l,
-        None => match server::start_listening().await {
-            Ok(l) => l,
-            Err(e) => {
-                Logger::fatal(&format!("无法启动信道: {e}"));
-                return None;
-            }
-        },
-    };
+
 
     let iface_str = iface.to_string();
 
