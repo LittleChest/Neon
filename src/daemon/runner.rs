@@ -67,57 +67,97 @@ pub async fn init(
     };
 
     let pool = build_endpoint_pool();
-    let pk = decode_b64_key(&config.interface.private_key).ok()?;
-    let pubk = decode_b64_key(WARP_PEER_KEY).ok()?;
+    
+    let pk = match decode_b64_key(&config.interface.private_key) {
+        Ok(k) => k,
+        Err(e) => { Logger::fatal(&format!("私钥解析失败: {e}")); return None; }
+    };
+    let pubk = match decode_b64_key(WARP_PEER_KEY) {
+        Ok(k) => k,
+        Err(e) => { Logger::fatal(&format!("公钥解析失败: {e}")); return None; }
+    };
     let hopping = std::sync::Arc::new(HoppingEngine::new(pk, pubk, None));
 
-    while !hopping.check_connectivity().await {
+    loop {
+        if hopping.check_connectivity().await {
+            break;
+        }
         Logger::info("等待网络连接...");
         tokio::time::sleep(Duration::from_secs(10)).await;
     }
 
-    Logger::info("正在探测可用端点...");
-    let first_ep = match hopping.pick_initial(&pool, config.hopping.concurrent_tests).await {
-        Some(ep) => ep,
-        None => {
-            Logger::warn("未找到可用端点");
-            pool[0]
+    let first_ep = loop {
+        Logger::info("正在探测可用端点...");
+        if let Some(ep) = hopping.race_for_first(&pool, config.hopping.concurrent_tests).await {
+            Logger::info(&format!("选定端点: {}", ep));
+            break ep;
         }
+        Logger::warn("所有探测均超时，10秒后重试...");
+        tokio::time::sleep(Duration::from_secs(10)).await;
     };
 
-    WgManager::check_kernel_support().await.ok()?;
-    let iface = WgManager::find_available_name().await.ok()?;
+    if let Err(e) = WgManager::check_kernel_support().await {
+        Logger::fatal(&format!("内核不支持 WireGuard: {e}"));
+        return None;
+    }
 
-    let (if_mgr, conn) = InterfaceManager::new().ok()?;
+    let iface = match WgManager::find_available_name().await {
+        Ok(i) => i,
+        Err(e) => { Logger::fatal(&format!("获取接口名失败: {e}")); return None; }
+    };
+
+    let (if_mgr, conn) = match InterfaceManager::new() {
+        Ok(c) => c,
+        Err(e) => { Logger::fatal(&format!("网卡失败: {e}")); return None; }
+    };
     tokio::spawn(conn);
 
     let iface_name = iface.to_string();
-    let iface_index = if_mgr.create_wg(&iface_name, config.interface.mtu).await.ok()?;
-    if_mgr.add_ip(iface_index, &config.interface.ipv4).await.ok()?;
-    if_mgr.add_ip(iface_index, &config.interface.ipv6).await.ok()?;
-    if_mgr.set_up(iface_index).await.ok()?;
+    let iface_index = match if_mgr.create_wg(&iface_name, config.interface.mtu).await {
+        Ok(i) => i,
+        Err(e) => { Logger::fatal(&format!("创建接口失败: {e}")); return None; }
+    };
 
-    WgManager::apply_device_config(iface.clone(), config.interface.private_key.clone(), FWMARK, None).await.ok()?;
+    let _ = if_mgr.add_ip(iface_index, &config.interface.ipv4).await;
+    let _ = if_mgr.add_ip(iface_index, &config.interface.ipv6).await;
 
-    WgManager::set_peer(iface.clone(), WARP_PEER_KEY.to_string(), first_ep, 25).await.ok()?;
+    if let Err(e) = if_mgr.set_up(iface_index).await {
+        Logger::fatal(&format!("启用接口失败: {e}"));
+        return None;
+    }
 
-    let (rt_mgr, rt_conn) = RoutingManager::new().ok()?;
+    if let Err(e) = WgManager::apply_device_config(iface.clone(), config.interface.private_key.clone(), FWMARK, None).await {
+        Logger::fatal(&format!("下发配置失败: {e}"));
+        return None;
+    }
+
+    if let Err(e) = WgManager::set_peer(iface.clone(), WARP_PEER_KEY.to_string(), first_ep, 25).await {
+        Logger::fatal(&format!("设置对端失败: {e}"));
+        return None;
+    }
+
+    let (rt_mgr, rt_conn) = match RoutingManager::new() {
+        Ok(c) => c,
+        Err(e) => { Logger::fatal(&format!("路由控制失败: {e}")); return None; }
+    };
     tokio::spawn(rt_conn);
-    rt_mgr.add_default_route(iface_index, WARP_TABLE).await.ok()?;
-    rt_mgr.apply_rules(
+    let _ = rt_mgr.add_default_route(iface_index, WARP_TABLE).await;
+    
+    if let Err(e) = rt_mgr.apply_rules(
         &config.routing.must_proxy,
         &config.routing.must_bypass,
         &config.routing.rules_ips,
         config.routing.is_whitelist,
         WARP_TABLE, 0, FWMARK,
         crate::daemon::hopping::BYPASS_MARK,
-    ).await.ok()?;
+    ).await {
+        Logger::fatal(&format!("下发路由规则失败: {e}"));
+        return None;
+    }
 
     let prop_path = module_dir.join("module.prop");
 
     Logger::info("正在启动守护进程");
-
-
 
     let iface_str = iface.to_string();
 
@@ -192,12 +232,14 @@ pub async fn run_loop(mut state: DaemonState) {
                 let engine = state.hopping.clone();
                 let pool = state.pool.clone();
                 let concurrent = state.config.hopping.concurrent_tests;
-                let wait_sec = state.config.hopping.wait_sec;
                 let tx = hop_tx.clone();
+                
                 tokio::spawn(async move {
                     if engine.check_connectivity().await {
-                        if let Some(best) = engine.find_best(&pool, concurrent, wait_sec).await {
-                            let _ = tx.send(best).await;
+                        if let Some(best_ep) = engine.find_lowest_latency(&pool, concurrent).await {
+                            let _ = tx.send(best_ep).await;
+                        } else {
+                            Logger::warn("未发现可用端点");
                         }
                     } else {
                         Logger::warn("未连接至互联网");

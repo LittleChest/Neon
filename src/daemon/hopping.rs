@@ -56,90 +56,61 @@ impl HoppingEngine {
         }
     }
 
-    /// 持续寻找最佳端点，如果失败则定期重试
-    pub async fn find_best(
+    pub async fn race_for_first(
         &self,
         endpoints: &[SocketAddr],
-        concurrent: usize,
-        wait_sec: u64,
+        count: usize,
     ) -> Option<SocketAddr> {
-        let count = if concurrent == 0 { 1 } else { concurrent };
-        if endpoints.is_empty() {
-            return None;
+        let candidates = random_sample(endpoints, count);
+        let mut probes = FuturesUnordered::new();
+        
+        for ep in candidates {
+            probes.push(self.probe(ep));
         }
 
-        loop {
-            match self.probe_batch(endpoints, count, true).await {
-                Some(endpoint) => {
-                    println!(
-                        "使用端点: {} (RTT {:.0}ms)",
-                        endpoint.endpoint,
-                        endpoint.rtt.as_secs_f64() * 1000.0
-                    );
-                    return Some(endpoint.endpoint);
-                }
-                None => {
-                    println!("等待 {wait_sec} 秒后重试...");
-                    tokio::time::sleep(Duration::from_secs(wait_sec)).await;
-                }
+        while let Some(outcome) = probes.next().await {
+            if let Some(o) = outcome {
+                return Some(o.endpoint);
             }
         }
+        
+        None
     }
 
-    /// 从端点列表中选择一个可用的初始端点
-    pub async fn pick_initial(&self, endpoints: &[SocketAddr], max_probes: usize) -> Option<SocketAddr> {
-        if endpoints.is_empty() {
+    pub async fn find_lowest_latency(
+        &self,
+        endpoints: &[SocketAddr],
+        count: usize,
+    ) -> Option<SocketAddr> {
+        let candidates = random_sample(endpoints, count);
+        let mut probes = FuturesUnordered::new();
+        
+        for ep in candidates {
+            probes.push(self.probe(ep));
+        }
+
+        let mut results = Vec::new();
+        while let Some(outcome) = probes.next().await {
+            if let Some(o) = outcome {
+                results.push(o);
+            }
+        }
+
+        if results.is_empty() {
             return None;
         }
-        let count = if max_probes == 0 { 1 } else { max_probes };
 
-        let working = self.collect_working_endpoints(endpoints, count).await;
-        if working.is_empty() {
-            let fallback = random_sample(endpoints, 1)[0];
-            println!("未找到可用端点，使用: {fallback}");
-            Some(fallback)
-        } else {
-            let pick = random_sample(&working, 1)[0];
-            println!("从 {} 个可用端点中选择: {pick}", working.len());
-            Some(pick)
-        }
+        results.sort_by_key(|o| o.rtt);
+        
+        let best = results[0].endpoint;
+        println!("ℹ️ 本轮测速 {} 个节点，最优延迟: {:.0}ms -> {}", 
+                 results.len(), results[0].rtt.as_secs_f64() * 1000.0, best);
+
+        Some(best)
     }
 
     pub async fn check_connectivity(&self) -> bool {
         check_internet_raw().await
-    }
-
-    async fn probe_batch(&self, endpoints: &[SocketAddr], count: usize, return_first: bool) -> Option<ProbeOutcome> {
-        let candidates = random_sample(endpoints, count);
-        let mut probes = FuturesUnordered::new();
-        for ep in candidates {
-            probes.push(self.probe(ep));
-        }
-
-        while let Some(outcome) = probes.next().await {
-            if let Some(o) = outcome {
-                if return_first {
-                    return Some(o);
-                }
-            }
-        }
-        None
-    }
-
-    async fn collect_working_endpoints(&self, endpoints: &[SocketAddr], count: usize) -> Vec<SocketAddr> {
-        let candidates = random_sample(endpoints, count);
-        let mut probes = FuturesUnordered::new();
-        for ep in candidates {
-            probes.push(self.probe(ep));
-        }
-
-        let mut working = Vec::new();
-        while let Some(outcome) = probes.next().await {
-            if let Some(o) = outcome {
-                working.push(o.endpoint);
-            }
-        }
-        working
     }
 
     pub async fn probe(&self, endpoint: SocketAddr) -> Option<ProbeOutcome> {
@@ -364,7 +335,7 @@ pub fn decode_b64_key(b64: &str) -> Result<[u8; 32], String> {
     Ok(key)
 }
 
-fn random_sample<T: Copy>(items: &[T], n: usize) -> Vec<T> {
+pub fn random_sample<T: Copy>(items: &[T], n: usize) -> Vec<T> {
     use std::collections::hash_map::RandomState;
     use std::hash::{BuildHasher, Hasher};
 
