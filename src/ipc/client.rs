@@ -7,7 +7,12 @@ use tokio::io::{AsyncBufReadExt, AsyncSeekExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 
 pub async fn run_start() {
-    match try_start().await {
+    let initial_pos = match tokio::fs::metadata(crate::LOG_FILE).await {
+        Ok(meta) => meta.len(),
+        Err(_) => 0,
+    };
+    
+    match try_start(initial_pos).await {
         Ok(_) => {
             countdown(10).await;
         }
@@ -18,9 +23,9 @@ pub async fn run_start() {
     }
 }
 
-async fn try_start() -> io::Result<()> {
+async fn try_start(initial_pos: u64) -> io::Result<()> {
     let done = Arc::new(AtomicBool::new(false));
-    let tail = tokio::spawn(tail_log(crate::LOG_FILE.to_string(), done.clone()));
+    let tail = tokio::spawn(tail_log(crate::LOG_FILE.to_string(), done.clone(), initial_pos));
 
     let mut waited = 0u64;
     let stream = loop {
@@ -42,20 +47,32 @@ async fn try_start() -> io::Result<()> {
     let mut lines = BufReader::new(reader).lines();
     writer.write_all(b"start\n").await?;
 
-    while let Ok(Some(line)) = lines.next_line().await {
-        if line == "DONE" {
-            break;
+    match tokio::time::timeout(Duration::from_secs(10), async {
+        while let Ok(Some(line)) = lines.next_line().await {
+            if line == "DONE" {
+                break;
+            }
+        }
+    }).await {
+        Ok(_) => {},
+        Err(_) => {
+            eprintln!("- [!] 守护进程无响应，请查看管理器日志。");
         }
     }
+    
     done.store(true, Ordering::Relaxed);
     let _ = tail.await;
     Ok(())
 }
 
 pub async fn run_action() {
-    match try_action().await {
-        Ok(_) => {
-        }
+    let initial_pos = match tokio::fs::metadata(crate::LOG_FILE).await {
+        Ok(meta) => meta.len(),
+        Err(_) => 0,
+    };
+
+    match try_action(initial_pos).await {
+        Ok(_) => {}
         Err(e) => {
             eprintln!("- [!] 无法与守护进程通信: {e}");
             countdown(10).await;
@@ -63,7 +80,7 @@ pub async fn run_action() {
     }
 }
 
-async fn try_action() -> io::Result<()> {
+async fn try_action(initial_pos: u64) -> io::Result<()> {
     let stream = UnixStream::connect(SOCKET_PATH).await?;
     let (reader, mut writer) = stream.into_split();
     let mut lines = BufReader::new(reader).lines();
@@ -78,7 +95,7 @@ async fn try_action() -> io::Result<()> {
             }
             "EXIT" => {
                 let done = Arc::new(AtomicBool::new(false));
-                let tail = tokio::spawn(tail_log(crate::LOG_FILE.to_string(), done.clone()));
+                let tail = tokio::spawn(tail_log(crate::LOG_FILE.to_string(), done.clone(), initial_pos));
                 while let Ok(Some(line)) = lines.next_line().await {
                     if line == "DONE" {
                         break;
@@ -111,16 +128,17 @@ pub async fn countdown(secs: u64) {
     }
 }
 
-async fn tail_log(path: String, done: Arc<AtomicBool>) {
-    let mut pos: u64 = 0;
+async fn tail_log(path: String, done: Arc<AtomicBool>, mut pos: u64) {
     loop {
         if done.load(Ordering::Relaxed) {
             if let Ok(mut f) = tokio::fs::File::open(&path).await {
-                let _ = f.seek(std::io::SeekFrom::Start(pos)).await;
+                let _ = f.seek(io::SeekFrom::Start(pos)).await;
                 let mut reader = BufReader::new(f);
                 let mut line = String::new();
                 while reader.read_line(&mut line).await.unwrap_or(0) > 0 {
-                    print!("{line}");
+                    if line.trim() != "---" {
+                        print!("{line}");
+                    }
                     line.clear();
                 }
             }
@@ -129,11 +147,13 @@ async fn tail_log(path: String, done: Arc<AtomicBool>) {
         }
         match tokio::fs::File::open(&path).await {
             Ok(mut f) => {
-                let _ = f.seek(std::io::SeekFrom::Start(pos)).await;
+                let _ = f.seek(io::SeekFrom::Start(pos)).await;
                 let mut reader = BufReader::new(f);
                 let mut line = String::new();
                 while reader.read_line(&mut line).await.unwrap_or(0) > 0 {
-                    print!("{line}");
+                    if line.trim() != "---" {
+                        print!("{line}");
+                    }
                     line.clear();
                 }
                 let _ = std::io::Write::flush(&mut std::io::stdout());

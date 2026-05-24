@@ -109,7 +109,7 @@ async fn handle_action(
     let _ = writer.write_all(logs_text.as_bytes()).await;
     let _ = writer.write_all(stats_text.as_bytes()).await;
     let _ = writer
-        .write_all("- [!] 未发现配置文件变更。\n- [i] 想要停用服务吗？请在关闭此窗口后的 5 秒内再次点按。\nWAIT\n".as_bytes())
+        .write_all("- [!] 未发现配置文件变更。\n\n- [i] 想要停用服务吗？请在关闭此窗口后的 5 秒内再次点按。\nWAIT\n".as_bytes())
         .await;
 
     let _ = writer.shutdown().await;
@@ -130,25 +130,27 @@ async fn show_unread_logs() -> String {
         Err(_) => return String::new(),
     };
 
-    let mut lines: Vec<String> = content.lines().map(|s| s.to_string()).collect();
     let mut output = String::new();
-    let mut modified = false;
+    let last_chunk = match content.rfind("---") {
+        Some(idx) => &content[idx + 3..],
+        None => &content,
+    };
 
-    for line in lines.iter_mut() {
-        if line.starts_with('!') {
-            continue;
-        }
-        if line.contains("⛔") || line.contains("❌") || line.contains("⚠️") {
+    let mut has_unread = false;
+    for line in last_chunk.lines() {
+        let line = line.trim();
+        if line.is_empty() || line == "---" { continue; }
+        
+        has_unread = true;
+        
+        if line.starts_with("⛔") || line.starts_with("❌") || line.starts_with("⚠️") {
             output.push_str(line);
             output.push('\n');
-            let marked = format!("!{line}");
-            *line = marked;
-            modified = true;
         }
     }
 
-    if modified {
-        let _ = tokio::fs::write(crate::LOG_FILE, lines.join("\n")).await;
+    if has_unread {
+        crate::state::logger::Logger::mark_read();
     }
 
     output

@@ -54,6 +54,14 @@ impl Logger {
         let _ = std::fs::write(path, lines.join("\n"));
     }
 
+    pub fn mark_read() {
+        let mut state = Self::inner().state.write().unwrap();
+        state.error_count = 0;
+        state.warning_count = 0;
+        drop(state);
+        Self::append_line("---");
+    }
+
     pub fn fatal(msg: &str) {
         let mut state = Self::inner().state.write().unwrap();
         state.fatal = Some(msg.to_string());
