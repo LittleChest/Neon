@@ -23,7 +23,7 @@ impl MountManager {
         .map_err(io::Error::from)
     }
 
-    fn mount_bind(source: &Path, target: &Path) -> io::Result<()> {
+    pub fn mount_bind(source: &Path, target: &Path) -> io::Result<()> {
         mount(source, target, c"", MountFlags::BIND, c"")
             .map_err(io::Error::from)
     }
@@ -83,6 +83,8 @@ impl MountManager {
     pub async fn cleanup_magisk_env(module_dir: &Path) -> io::Result<()> {
         let real_prop = module_dir.join("module.prop");
         let _ = Self::unmount_path(&real_prop);
+        let action_sh = module_dir.join("action.sh");
+        let _ = Self::unmount_path(&action_sh);
         Ok(())
     }
 }

@@ -29,13 +29,25 @@ impl UiRenderer {
         }
     }
 
+    pub async fn update_prop_status(prop_path: &Path, prefix: &str, allow_mount: bool) {
+        if !allow_mount { return; }
+        
+        let original_desc = "Cloudflare WARP with endpoint hopping & kernel-level routing.";
+        let new_desc = format!("{}{}", prefix, original_desc);
+        
+        let _ = crate::prop::write_prop(prop_path, &new_desc).await;
+    }
+
     pub async fn update_prop(
         prop_path: &Path,
         tx: u64,
         rx: u64,
         last_hs_secs: u64,
         current_endpoint: &str,
+        allow_mount: bool,
     ) -> std::io::Result<()> {
+        if !allow_mount { return Ok(()); }
+
         let tx_str = Self::human_readable(tx);
         let rx_str = Self::human_readable(rx);
         let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
@@ -43,7 +55,7 @@ impl UiRenderer {
 
         let description = Logger::read_state(|state| {
             if let Some(fatal_msg) = &state.fatal {
-                return format!("❌ {}", fatal_msg);
+                return format!("🚫 {}", fatal_msg);
             }
             let mut base = format!(
                 "🌐 传输: [↑{} ↓{}] | 🤝 上次握手: {} | ⚡ 端点: {}",

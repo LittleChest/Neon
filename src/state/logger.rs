@@ -40,6 +40,11 @@ impl Logger {
         f(&Self::inner().state.read().unwrap())
     }
 
+    pub fn has_warnings_or_errors() -> bool {
+        let state = Self::inner().state.read().unwrap();
+        state.error_count > 0 || state.warning_count > 0 || state.fatal.is_some()
+    }
+
     fn append_line(entry: &str) {
         let path = Self::inner().file;
         let mut lines: Vec<String> = std::fs::read_to_string(path)

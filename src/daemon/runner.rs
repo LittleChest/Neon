@@ -1,6 +1,6 @@
 use crate::config::Config;
 use crate::daemon::hopping::{decode_b64_key, HoppingEngine};
-use crate::ipc::server::{self, IpcResult};
+use crate::ipc::SOCKET_PATH;
 use crate::state::logger::Logger;
 use crate::state::ui::UiRenderer;
 use crate::sys::interface::InterfaceManager;
@@ -9,18 +9,21 @@ use crate::sys::routing::RoutingManager;
 use crate::sys::wg::WgManager;
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use tokio::io::AsyncWriteExt;
+use tokio::net::UnixListener;
 use tokio::time;
 use wireguard_control::InterfaceName;
+use futures::StreamExt;
+use inotify::{Inotify, WatchMask};
 
-pub(crate) const WARP_PEER_KEY: &str = "bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo=";
-pub(crate) const WARP_IP_BASE: [u8; 4] = [162, 159, 193, 1];
-pub(crate) const WARP_IP_COUNT: u8 = 10;
+pub const WARP_PEER_KEY: &str = "bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo=";
+pub const WARP_IP_BASE: [u8; 4] = [162, 159, 193, 1];
+pub const WARP_IP_COUNT: u8 = 10;
 const FWMARK: u32 = 0x20000;
 const WARP_TABLE: u32 = 0x20000;
 
-pub(crate) const WARP_PORTS: &[u16] = &[
+pub const WARP_PORTS: &[u16] = &[
     500, 854, 859, 864, 878, 880, 890, 891, 894, 903, 908, 928, 934, 939, 942, 943, 945, 946,
     955, 968, 987, 988, 1002, 1010, 1014, 1018, 1070, 1074, 1180, 1387, 1701, 1843, 2371, 2408,
     2506, 3138, 3476, 3581, 3854, 4177, 4198, 4233, 4500, 5279, 5956, 7103, 7152, 7156, 7281,
@@ -29,42 +32,95 @@ pub(crate) const WARP_PORTS: &[u16] = &[
 
 pub struct DaemonState {
     pub config: Config,
-    pub config_path: String,
     pub iface: InterfaceName,
     pub iface_str: String,
     pub pool: Vec<SocketAddr>,
     pub current_endpoint: SocketAddr,
     pub hopping: std::sync::Arc<HoppingEngine>,
     pub prop_path: PathBuf,
-    pub pre_disable_since: Option<Instant>,
-    pub ipc_listener: Option<tokio::net::UnixListener>,
+    pub action_sh_visible: bool,
 }
 
-pub async fn init(
-    config_path: &str,
-    existing_listener: Option<tokio::net::UnixListener>,
-) -> Option<DaemonState> {
-    let config = Config::load_and_verify(config_path).await.ok()?;
+pub async fn run_daemon(config_path: &str) {
+    Logger::init(crate::LOG_FILE);
+    let disable_path = Path::new("/data/adb/modules/WARP/disable");
 
+    let inotify = Inotify::init().expect("Failed to init inotify");
+    inotify.watches().add("/data/adb/modules/WARP", WatchMask::CREATE | WatchMask::DELETE).expect("Failed to add watch");
+    let mut notify_stream = inotify.into_event_stream([0u8; 1024]).expect("Failed to create inotify stream");
+
+    let _ = tokio::fs::remove_file(SOCKET_PATH).await;
+    if let Some(parent) = Path::new(SOCKET_PATH).parent() {
+        tokio::fs::create_dir_all(parent).await.ok();
+    }
+    let ipc_listener = match UnixListener::bind(SOCKET_PATH) {
+        Ok(l) => l,
+        Err(e) => {
+            Logger::error(&format!("无法绑定套接字: {e}"));
+            return;
+        }
+    };
+
+    loop {
+        if disable_path.exists() {
+            tokio::select! {
+                Some(_) = notify_stream.next() => {}
+                Ok((mut stream, _)) = ipc_listener.accept() => {
+                    let _ = stream.write_all(b"PONG").await;
+                }
+            }
+            continue;
+        }
+
+        Logger::info("载入中...");
+        let config = Config::load_and_verify(config_path).await.unwrap_or_default();
+        let prop_path = Path::new("/data/adb/modules/WARP/module.prop");
+        
+        UiRenderer::update_prop_status(prop_path, "✅ 正在启用 | ", config.info.allow_mount).await;
+
+        if let Some(mut state) = init(config.clone()).await {
+            run_loop(&mut state, disable_path, &ipc_listener, &mut notify_stream).await;
+            deinit(&state).await;
+        } else {
+            if let Some(fatal_msg) = Logger::read_state(|s| s.fatal.clone()) {
+                UiRenderer::update_prop_status(prop_path, &format!("🚫 {} | ", fatal_msg), config.info.allow_mount).await;
+                
+                if config.info.allow_mount {
+                    let disable = Path::new("/data/adb/modules/WARP/disable");
+                    let _ = tokio::fs::write(disable, "").await;
+                    let dummy = Path::new("/dev/warp/daemon_deadlink");
+                    let _ = tokio::fs::remove_file(dummy).await;
+                    let _ = tokio::fs::symlink("/dev/null/114514", dummy).await;
+                    let _ = MountManager::mount_bind(dummy, disable);
+
+                    let update = Path::new("/data/adb/modules/WARP/update");
+                    let _ = tokio::fs::write(update, "").await;
+                }
+                return;
+            }
+
+            Logger::error("初始化失败，等待重新启用...");
+            loop {
+                tokio::select! {
+                    Some(_) = notify_stream.next() => {
+                        if disable_path.exists() { break; }
+                    }
+                    Ok((mut stream, _)) = ipc_listener.accept() => {
+                        let _ = stream.write_all(b"PONG").await;
+                    }
+                }
+            }
+        }
+    }
+}
+
+pub async fn init(config: Config) -> Option<DaemonState> {
     let module_dir = Path::new("/data/adb/modules/WARP");
     let tmp_dir = Path::new("/dev/warp");
-    MountManager::setup_magisk_env(module_dir, &[tmp_dir]).await.ok()?;
-
-    Logger::init(crate::LOG_FILE);
-    Logger::info("载入中...");
-
-    let _ = tokio::fs::remove_file("/data/adb/modules/WARP/disable").await;
-
-    let ipc_listener = match existing_listener {
-        Some(l) => l,
-        None => match server::start_listening().await {
-            Ok(l) => l,
-            Err(e) => {
-                Logger::fatal(&format!("无法启动信道: {e}"));
-                return None;
-            }
-        },
-    };
+    
+    if config.info.allow_mount {
+        MountManager::setup_magisk_env(module_dir, &[tmp_dir]).await.ok()?;
+    }
 
     let pool = build_endpoint_pool();
     
@@ -156,38 +212,59 @@ pub async fn init(
     }
 
     let prop_path = module_dir.join("module.prop");
-
     Logger::info("正在启动守护进程");
-
-    let iface_str = iface.to_string();
 
     Some(DaemonState {
         config,
-        config_path: config_path.to_string(),
         iface,
-        iface_str,
+        iface_str: iface_name,
         pool,
         current_endpoint: first_ep,
         hopping,
         prop_path,
-        pre_disable_since: None,
-        ipc_listener: Some(ipc_listener),
+        action_sh_visible: true,
     })
 }
 
-pub async fn run_loop(mut state: DaemonState) {
+pub async fn run_loop(
+    state: &mut DaemonState, 
+    disable_path: &Path, 
+    ipc_listener: &UnixListener, 
+    notify_stream: &mut inotify::EventStream<[u8; 1024]>
+) {
     let hopping_interval = Duration::from_secs(state.config.hopping.interval_sec);
     let ui_interval = Duration::from_secs(state.config.info.refresh_sec);
     let mut hopping_tick = time::interval(hopping_interval);
     let mut ui_tick = time::interval(ui_interval);
 
-    let listener = state.ipc_listener.take().expect("信道未初始化");
-
     let (hop_tx, mut hop_rx) = tokio::sync::mpsc::channel::<SocketAddr>(1);
 
     loop {
-        let endpoint_str = state.current_endpoint.to_string();
         tokio::select! {
+            Some(_) = notify_stream.next() => {
+                if disable_path.exists() {
+                    break;
+                }
+                
+                if state.config.info.allow_mount {
+                    let show = state.config.info.show_on_action || Logger::has_warnings_or_errors();
+                    if show != state.action_sh_visible {
+                        let action_path = Path::new("/data/adb/modules/WARP/action.sh");
+                        if action_path.exists() {
+                            if show {
+                                let _ = MountManager::unmount_path(action_path);
+                            } else {
+                                let dummy = Path::new("/dev/warp/loop_deadlink");
+                                let _ = tokio::fs::remove_file(dummy).await;
+                                let _ = tokio::fs::symlink("/dev/null/114514", dummy).await;
+                                let _ = MountManager::mount_bind(dummy, action_path);
+                            }
+                        }
+                        state.action_sh_visible = show;
+                    }
+                }
+            }
+
             Some(best) = hop_rx.recv() => {
                 if best != state.current_endpoint {
                     if WgManager::update_endpoint(state.iface.clone(), WARP_PEER_KEY.to_string(), best).await.is_ok() {
@@ -196,36 +273,8 @@ pub async fn run_loop(mut state: DaemonState) {
                 }
             }
 
-            result = server::handle_next(
-                &listener,
-                &state.iface_str,
-                &state.config_path,
-                &state.config,
-                state.pre_disable_since,
-                &endpoint_str,
-                state.config.hopping.interval_sec,
-            ) => {
-                let (ipc_result, mut writer) = result;
-                match ipc_result {
-                    IpcResult::StartRequested => {
-                        Logger::error("守护进程已在运行");
-                    }
-                    IpcResult::DeinitRequested => {
-                        Logger::info("正在停用...");
-                        deinit(&state).await;
-                        if let Some(w) = writer.as_mut() {
-                            let _ = w.write_all(b"DONE\n").await;
-                        }
-                        break;
-                    }
-                    IpcResult::ActionCompleted => {
-                        if state.pre_disable_since.is_none() {
-                            state.pre_disable_since = Some(Instant::now());
-                            Logger::info("等待停用请求");
-                        }
-                    }
-                    IpcResult::StatsOnly | IpcResult::Error => {}
-                }
+            Ok((mut stream, _)) = ipc_listener.accept() => {
+                let _ = stream.write_all(b"PONG").await;
             }
 
             _ = hopping_tick.tick() => {
@@ -248,14 +297,7 @@ pub async fn run_loop(mut state: DaemonState) {
             }
 
             _ = ui_tick.tick() => {
-                if let Some(since) = state.pre_disable_since {
-                    if since.elapsed().as_secs() >= 5 {
-                        state.pre_disable_since = None;
-                        Logger::info("停用请求已过期");
-                    }
-                }
-
-                if MountManager::is_safe_tmpfs(&state.prop_path).unwrap_or(false) {
+                if !state.config.info.allow_mount || MountManager::is_safe_tmpfs(&state.prop_path).unwrap_or(false) {
                     if let Ok(stats) = WgManager::get_stats(state.iface.clone()).await {
                         let hs = stats.last_handshake
                             .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
@@ -268,6 +310,7 @@ pub async fn run_loop(mut state: DaemonState) {
                             stats.rx_bytes,
                             hs,
                             &state.current_endpoint.to_string(),
+                            state.config.info.allow_mount
                         ).await;
                     }
                 }
@@ -277,7 +320,8 @@ pub async fn run_loop(mut state: DaemonState) {
 }
 
 async fn deinit(state: &DaemonState) {
-    // 清理路由规则
+    UiRenderer::update_prop_status(&state.prop_path, "❌ 正在停用 | ", state.config.info.allow_mount).await;
+
     let (rt_mgr, rt_conn) = match RoutingManager::new() {
         Ok(v) => v,
         Err(e) => {
@@ -290,7 +334,6 @@ async fn deinit(state: &DaemonState) {
         Logger::error(&format!("清理路由失败: {e}"));
     }
 
-    // 删除 WireGuard 接口
     let (if_mgr, if_conn) = match InterfaceManager::new() {
         Ok(v) => v,
         Err(e) => {
@@ -310,15 +353,11 @@ async fn deinit(state: &DaemonState) {
         Err(_) => Logger::warn("接口不存在，跳过删除"),
     }
 
-    let disable_path = Path::new("/data/adb/modules/WARP/disable");
-    let _ = tokio::fs::write(disable_path, "").await;
-
-    let _ = crate::prop::write_stopped(&state.prop_path).await;
-
-    let module_dir = Path::new("/data/adb/modules/WARP");
-    let _ = MountManager::cleanup_magisk_env(module_dir).await;
-
-    let _ = tokio::fs::remove_file(server::SOCKET_PATH).await;
+    if state.config.info.allow_mount {
+        let _ = crate::prop::write_stopped(&state.prop_path).await;
+        let module_dir = Path::new("/data/adb/modules/WARP");
+        let _ = MountManager::cleanup_magisk_env(module_dir).await;
+    }
 
     Logger::info("服务已停止");
 }

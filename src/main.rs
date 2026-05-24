@@ -14,78 +14,20 @@ fn main() {
     match sub {
         Some("init") => {
             let config_path = args.get(2).map(|s| s.as_str()).unwrap_or("/data/adb/warp/config.toml");
-            let _ = crate::config::Config::ensure_exists(config_path);
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all().build().expect("无法初始化运行时");
+            rt.block_on(async {
+                let _ = crate::config::Config::ensure_exists(config_path).await;
+            });
         }
 
         Some("action") => {
             let config_path = args.get(2).map(|s| s.as_str()).unwrap_or("/data/adb/warp/config.toml");
-
             let rt = tokio::runtime::Builder::new_current_thread()
                 .enable_all().build().expect("无法初始化运行时");
-
-            let sock_path = crate::ipc::server::SOCKET_PATH;
-            let sock_exists = std::path::Path::new(sock_path).exists();
-
-            if sock_exists {
-                let daemon_running = rt.block_on(crate::ipc::client::is_daemon_running());
-                if daemon_running {
-                    rt.block_on(crate::ipc::client::run_action());
-                } else {
-                    println!("- [!] 检测到已存在的信道文件，但守护进程未响应。");
-                    println!("- [i] 这可能意味着守护进程正在启动。");
-                    rt.block_on(crate::ipc::client::block_1h());
-                }
-            } else {
-                {
-                    let p = std::path::Path::new(config_path);
-                    if !p.exists() {
-                        if let Some(parent) = p.parent() {
-                            let _ = std::fs::create_dir_all(parent);
-                        }
-                        let _ = std::fs::write(p, crate::config::Config::default_toml());
-                    }
-                }
-
-                match unsafe { libc::fork() } {
-                    -1 => {
-                        println!("- [!] fork 失败");
-                    }
-                    0 => {
-                        unsafe { libc::setsid(); }
-                        
-                        match unsafe { libc::fork() } {
-                            -1 => { unsafe { libc::_exit(1); } }
-                            0 => {
-                                unsafe {
-                                    let fd = libc::open(c"/dev/null".as_ptr(), libc::O_RDWR);
-                                    if fd >= 0 {
-                                        libc::dup2(fd, 0); // stdin
-                                        libc::dup2(fd, 1); // stdout
-                                        libc::dup2(fd, 2); // stderr
-                                        if fd > 2 { libc::close(fd); }
-                                    }
-                                }
-                                
-                                let child_rt = tokio::runtime::Builder::new_current_thread()
-                                    .enable_all().build().expect("子进程运行时失败");
-                                
-                                child_rt.block_on(async {
-                                    if let Some(state) = crate::daemon::runner::init(config_path, None).await {
-                                        crate::daemon::runner::run_loop(state).await;
-                                    }
-                                });
-                                unsafe { libc::_exit(0); }
-                            }
-                            _ => {
-                                unsafe { libc::_exit(0); } 
-                            } 
-                        }
-                    }
-                    _ => {
-                        rt.block_on(crate::ipc::client::run_start());
-                    }
-                }
-            }
+            rt.block_on(async {
+                crate::ipc::run_action(config_path).await;
+            });
         }
 
         Some("test") => {
@@ -123,9 +65,7 @@ fn main() {
                 .enable_all().build().expect("tokio 运行时失败");
             rt.block_on(async {
                 let _ = crate::config::Config::ensure_exists(config_path).await;
-                if let Some(state) = crate::daemon::runner::init(config_path, None).await {
-                    crate::daemon::runner::run_loop(state).await;
-                }
+                crate::daemon::runner::run_daemon(config_path).await;
             });
         }
     }
