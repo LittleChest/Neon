@@ -37,92 +37,8 @@ pub async fn run_action(config_path: &str) {
     }
 
     if !sock_exists {
-        println!("- [i] 正在启动守护进程...");
-
-        let log_path = std::path::Path::new(crate::LOG_FILE);
-        if let Some(parent) = log_path.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-
-        match unsafe { libc::fork() } {
-            -1 => {
-                println!("- [!] 启动失败");
-                return;
-            }
-            0 => {
-                unsafe { libc::setsid(); }
-                match unsafe { libc::fork() } {
-                    -1 => { unsafe { libc::_exit(1); } }
-                    0 => {
-                        unsafe {
-                            let fd = libc::open(c"/dev/null".as_ptr(), libc::O_RDWR);
-                            if fd >= 0 {
-                                libc::dup2(fd, 0); // stdin
-                                libc::dup2(fd, 1); // stdout
-                                libc::dup2(fd, 2); // stderr
-                                if fd > 2 { libc::close(fd); }
-                            }
-                        }
-                        
-                        let child_rt = tokio::runtime::Builder::new_current_thread()
-                            .enable_all().build().expect("子进程运行时失败");
-                        
-                        let config_path_clone = config_path.to_string();
-                        child_rt.block_on(async move {
-                            crate::daemon::runner::run_daemon(&config_path_clone).await;
-                        });
-                        unsafe { libc::_exit(0); }
-                    }
-                    _ => { unsafe { libc::_exit(0); } }
-                }
-            }
-            _ => {
-                let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-                let fatal_flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-                let log_path_str = crate::LOG_FILE.to_string();
-                let done_clone = done.clone();
-                let fatal_clone = fatal_flag.clone();
-                
-                let tail_handle = tokio::spawn(async move {
-                    tail_log(log_path_str, done_clone, fatal_clone).await;
-                });
-
-                let mut waited = 0u64;
-                let connected = loop {
-                    if fatal_flag.load(std::sync::atomic::Ordering::Relaxed) {
-                        tokio::time::sleep(Duration::from_millis(100)).await;
-                        break false;
-                    }
-                    
-                    let path_created = std::path::Path::new(SOCKET_PATH).exists();
-                    if path_created && check_liveness().await {
-                        break true;
-                    }
-                    if waited >= 15000 {
-                        break false;
-                    }
-                    tokio::time::sleep(Duration::from_millis(200)).await;
-                    waited += 200;
-                };
-
-                done.store(true, std::sync::atomic::Ordering::Relaxed);
-                let _ = tail_handle.await;
-
-                if !connected {
-                    if fatal_flag.load(std::sync::atomic::Ordering::Relaxed) {
-                        println!("- [!] 发生致命错误。");
-                        return;
-                    } else {
-                        println!("- [!] 守护进程启动超时。");
-                    }
-                } else {
-                    println!("- [i] 守护进程已成功启动！");
-                }
-                
-                if config.info.await_on_action { block_1h().await; }
-                return;
-            }
-        }
+        println!("- [!] 守护进程未启动。");
+        return;
     }
 
     let is_alive = check_liveness().await;
@@ -174,37 +90,6 @@ pub async fn block_1h() {
     println!("\n- [i] 点按左上角以返回");
     let _ = std::io::stdout().flush();
     tokio::time::sleep(Duration::from_secs(3600)).await;
-}
-
-async fn tail_log(
-    path: String, 
-    done: std::sync::Arc<std::sync::atomic::AtomicBool>,
-    fatal_flag: std::sync::Arc<std::sync::atomic::AtomicBool>
-) {
-    let mut printed_chars = 0;
-    loop {
-        let is_done = done.load(std::sync::atomic::Ordering::Relaxed);
-        if let Ok(content) = tokio::fs::read_to_string(&path).await {
-            if content.len() > printed_chars {
-                let to_print = &content[printed_chars..];
-                for line in to_print.lines() {
-                    let line_trimmed = line.trim();
-                    if line_trimmed != "---" && !line_trimmed.is_empty() {
-                        println!("{line}");
-                        if line_trimmed.starts_with("⛔") {
-                            fatal_flag.store(true, std::sync::atomic::Ordering::Relaxed);
-                        }
-                    }
-                }
-                let _ = std::io::stdout().flush();
-                printed_chars = content.len();
-            }
-        }
-        if is_done {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
 }
 
 async fn read_logs_for_action() -> String {
