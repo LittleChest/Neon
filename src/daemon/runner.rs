@@ -71,19 +71,9 @@ pub async fn run_daemon(config_path: &str) {
 
     loop {
         if disable_path.exists() {
-            tokio::select! {
-                Some(_) = notify_stream.next() => {}
-                Ok((mut stream, _)) = ipc_listener.accept() => {
-                    let mut buf = [0u8; 32];
-                    if let Ok(n) = stream.read(&mut buf).await {
-                        let msg = String::from_utf8_lossy(&buf[..n]);
-                        if msg.trim() == "ping" {
-                            let _ = stream.write_all(b"PONG\n").await;
-                        }
-                    }
-                }
-            }
-            continue;
+            Logger::info("已退出");
+            let _ = tokio::fs::remove_file(SOCKET_PATH).await;
+            return;
         }
 
         Logger::info("载入中...");

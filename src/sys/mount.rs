@@ -62,6 +62,8 @@ impl MountManager {
         if let Some(&first_mem_dir) = memory_dirs.first() {
             let tmp_prop = first_mem_dir.join("module.prop");
 
+            while Self::unmount_path(&real_prop).is_ok() {}
+
             if real_prop.exists() {
                 let content = fs::read_to_string(&real_prop).await?;
                 fs::write(&tmp_prop, content).await?;
@@ -69,7 +71,6 @@ impl MountManager {
                 fs::write(&tmp_prop, crate::prop::PROP_BASE).await?;
             }
 
-            let _ = Self::unmount_path(&real_prop);
             Self::mount_bind(&tmp_prop, &real_prop)?;
 
             if !Self::is_safe_tmpfs(&real_prop)? {
@@ -82,7 +83,7 @@ impl MountManager {
 
     pub async fn cleanup_magisk_env(module_dir: &Path) -> io::Result<()> {
         let real_prop = module_dir.join("module.prop");
-        let _ = Self::unmount_path(&real_prop);
+        while Self::unmount_path(&real_prop).is_ok() {}
         Ok(())
     }
 }

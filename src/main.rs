@@ -8,6 +8,16 @@ mod sys;
 const LOG_FILE: &str = "/dev/warp/run.log";
 
 fn main() {
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    {
+        use std::os::unix::io::AsRawFd;
+        if let Ok(file) = std::fs::File::open("/proc/1/ns/mnt") {
+            unsafe {
+                let _ = libc::setns(file.as_raw_fd(), libc::CLONE_NEWNS);
+            }
+        }
+    }
+
     let args: Vec<String> = std::env::args().collect();
     let sub = args.get(1).map(|s| s.as_str());
 

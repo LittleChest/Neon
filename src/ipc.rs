@@ -11,7 +11,7 @@ async fn check_liveness() -> bool {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         let _ = stream.write_all(b"ping\n").await;
         let mut buf = [0u8; 8];
-        if let Ok(n) = stream.read(&mut buf).await {
+        if let Ok(Ok(n)) = tokio::time::timeout(Duration::from_secs(2), stream.read(&mut buf)).await {
             return &buf[..n] == b"PONG\n" || &buf[..n] == b"PONG";
         }
     }
@@ -24,20 +24,52 @@ pub async fn run_action(config_path: &str) {
     let has_warnings = !logs_text.is_empty();
 
     let sock_exists = std::path::Path::new(SOCKET_PATH).exists();
+    let is_alive = if sock_exists { check_liveness().await } else { false };
 
-    if !sock_exists {
-        println!("- [!] 守护进程未启动。");
-        if config.info.await_on_action { block_1h().await; }
-        return;
-    }
-
-    let is_alive = check_liveness().await;
     if !is_alive {
         println!("- [!] 守护进程未响应。");
-        let logs_text = read_logs_for_action().await;
         if !logs_text.is_empty() {
             println!("{}", logs_text);
         }
+    }
+
+    if !sock_exists {
+        println!("- [i] 正在启动守护进程...");
+        let exe = std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("/data/adb/warp/neon"));
+    
+        let mut cmd = std::process::Command::new(exe);
+        cmd.stdin(std::process::Stdio::null())
+           .stdout(std::process::Stdio::null())
+           .stderr(std::process::Stdio::null());
+       
+        #[cfg(any(target_os = "linux", target_os = "android"))]
+        {
+            use std::os::unix::process::CommandExt;
+            unsafe {
+                cmd.pre_exec(|| {
+                    libc::setsid();
+                    match libc::fork() {
+                        0 => {
+                            Ok(())
+                        }
+                        pid if pid > 0 => {
+                            libc::_exit(0);
+                        }
+                        _ => {
+                            Err(std::io::Error::last_os_error())
+                        }
+                    }
+                });
+            }
+        }
+
+        match cmd.spawn() {
+            Ok(mut child) => {
+                let _ = child.wait();
+            },
+            Err(e) => println!("- [!] 启动失败: {}", e),
+        }
+
         if config.info.await_on_action { block_1h().await; }
         return;
     }
