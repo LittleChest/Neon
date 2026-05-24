@@ -67,10 +67,14 @@ pub async fn run_action(config_path: &str) {
             Ok(mut child) => {
                 let _ = child.wait();
             },
-            Err(e) => println!("- [!] 启动失败: {}", e),
+            Err(e) => {
+                println!("- [!] 启动失败: {}", e);
+                if config.info.await_on_action {
+                    println!("\n- [!] 将于 5 秒后自动关闭");
+                    tokio::time::sleep(Duration::from_secs(5)).await;
+                }
+            },
         }
-
-        if config.info.await_on_action { block_1h().await; }
         return;
     }
 
@@ -105,14 +109,9 @@ pub async fn run_action(config_path: &str) {
     }
 
     if config.info.await_on_action {
-        block_1h().await;
+        println!("\n- [!] 将于 5 秒后自动关闭");
+        tokio::time::sleep(Duration::from_secs(5)).await;
     }
-}
-
-pub async fn block_1h() {
-    println!("\n- [i] 点按左上角以返回");
-    let _ = std::io::stdout().flush();
-    tokio::time::sleep(Duration::from_secs(3600)).await;
 }
 
 async fn read_logs_for_action() -> String {
