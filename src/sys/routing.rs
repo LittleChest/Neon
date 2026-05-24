@@ -22,7 +22,6 @@ impl RoutingManager {
         Ok((Self { handle }, connection))
     }
 
-
     // ip rule add to <cidr> lookup <table> prio <priority>
     async fn add_lookup_rule(&self, cidr: &IpNet, table: u32, priority: u32) -> io::Result<()> {
         let mut req = self.handle.rule().add().replace();
@@ -38,33 +37,17 @@ impl RoutingManager {
         })
     }
 
-    // ip rule add fwmark <mark>/<mask> iif lo lookup <table> prio <priority>
-    async fn add_fwmark_rule(
-        &self,
-        mark: u32,
-        mask: u32,
-        table: u32,
-        priority: u32,
-    ) -> io::Result<()> {
+    async fn add_catch_all_rule(&self, table: u32, priority: u32) -> io::Result<()> {
         for family in [AddressFamily::Inet, AddressFamily::Inet6] {
             let mut req = self.handle.rule().add().replace();
             req.message_mut().header.family = family;
-            req.message_mut()
-                .attributes
-                .push(RuleAttribute::FwMark(mark));
-            req.message_mut()
-                .attributes
-                .push(RuleAttribute::FwMask(mask));
-            req.message_mut()
-                .attributes
-                .push(RuleAttribute::Iifname("lo".to_string()));
             req = req
                 .table_id(table)
                 .action(RuleAction::ToTable)
                 .priority(priority);
 
             req.execute().await.map_err(|e| {
-                Logger::error(&format!("无法添加 fwmark 规则 0x{mark:x}/0x{mask:x}: {e}"));
+                Logger::error(&format!("无法添加 catch-all 规则 table {table}: {e}"));
                 io::Error::new(io::ErrorKind::Other, e)
             })?;
         }
@@ -75,18 +58,16 @@ impl RoutingManager {
     async fn add_fwmark_goto_rule(
         &self,
         mark: u32,
+        mask: u32,
         priority: u32,
         target: u32,
     ) -> io::Result<()> {
         for family in [AddressFamily::Inet, AddressFamily::Inet6] {
             let mut req = self.handle.rule().add().replace();
             req.message_mut().header.family = family;
-            req.message_mut()
-                .attributes
-                .push(RuleAttribute::FwMark(mark));
-            req.message_mut()
-                .attributes
-                .push(RuleAttribute::Goto(target));
+            req.message_mut().attributes.push(RuleAttribute::FwMark(mark));
+            req.message_mut().attributes.push(RuleAttribute::FwMask(mask));
+            req.message_mut().attributes.push(RuleAttribute::Goto(target));
             req = req.action(RuleAction::Goto).priority(priority);
 
             req.execute().await.map_err(|e| {
@@ -142,8 +123,7 @@ impl RoutingManager {
         msg.header.protocol = RouteProtocol::Static;
         msg.attributes.push(RouteAttribute::Table(table));
         msg.attributes.push(RouteAttribute::Oif(oif));
-        msg.attributes
-            .push(RouteAttribute::Destination(RouteAddress::from(dest)));
+        msg.attributes.push(RouteAttribute::Destination(RouteAddress::from(dest)));
         msg.header.destination_prefix_length = prefix_len;
 
         self.handle.route().add(msg).replace().execute().await.map_err(|e| {
@@ -152,14 +132,6 @@ impl RoutingManager {
         })
     }
 
-    //   0. Android
-    //   1. Bypass Hopping & Test
-    //   2. must_proxy  → lookup <table>
-    //   3. Android VPN
-    //   4. must_bypass → goto <target>
-    //   5. rules_ips
-    //   6. fwmark → lookup <table> (Only blacklist mode)
-    //   7. Android
     pub async fn apply_rules(
         &self,
         must_proxy: &[IpNet],
@@ -167,71 +139,59 @@ impl RoutingManager {
         rules_ips: &[IpNet],
         is_whitelist: bool,
         table_id: u32,
-        fwmark: u32,
-        fwmask: u32,
+        _fwmark: u32,
+        _fwmask: u32,
         bypass_mark: u32,
     ) -> io::Result<()> {
-        const PRIO_BYPASS_VPN_MARK: u32 = 12500;
-        const PRIO_BYPASS_MARK: u32 = 30100;
-        const PRIO_PROXY: u32 = 30500;
-        const PRIO_BYPASS: u32 = 30600;
-        const PRIO_LIST: u32 = 30700;
-        const PRIO_FWMARK: u32 = 30999;
-        const GOTO_AFTER_VPN_TARGET: u32 = 15040;
-        const GOTO_TARGET: u32 = 31000;
+        let mut count = 0;
 
-        self.add_fwmark_goto_rule(bypass_mark, PRIO_BYPASS_VPN_MARK, GOTO_AFTER_VPN_TARGET).await?;
-        self.add_fwmark_goto_rule(bypass_mark, PRIO_BYPASS_MARK, GOTO_TARGET).await?;
-        Logger::info(&format!("已注入 VPN 绕过规则 0x{bypass_mark:x} (prio {PRIO_BYPASS_VPN_MARK})"));
-        Logger::info(&format!("已注入 Neon 绕过规则 0x{bypass_mark:x} (prio {PRIO_BYPASS_MARK})"));
+        const PRIO_HOPPING_JUMP: u32 = 12500;
+        const PRIO_MUST_PROXY: u32 = 12600;
+        const PRIO_MUST_BYPASS: u32 = 14100;
+        const PRIO_RULES_IPS: u32 = 14200;
+        const PRIO_DEFAULT_PROXY: u32 = 14300;
+        const GOTO_TARGET_SYSTEM: u32 = 15000;
 
+        // Bypass VPN
+        self.add_fwmark_goto_rule(bypass_mark, 0xffffffff, PRIO_HOPPING_JUMP, GOTO_TARGET_SYSTEM).await?;
+        count += 2; // v4 + v6
+
+        // must_proxy
         for cidr in must_proxy {
-            self.add_lookup_rule(cidr, table_id, PRIO_PROXY).await?;
-        }
-        let n = must_proxy.len();
-        if n > 0 {
-            Logger::info(&format!("已注入 {n} 条强制代理规则 (prio {PRIO_PROXY})"));
+            self.add_lookup_rule(cidr, table_id, PRIO_MUST_PROXY).await?;
+            count += 1;
         }
 
+        // must_bypass
         for cidr in must_bypass {
-            self.add_goto_rule(cidr, GOTO_TARGET, PRIO_BYPASS).await?;
-        }
-        let n = must_bypass.len();
-        if n > 0 {
-            Logger::info(&format!("已注入 {n} 条强制直连规则 (prio {PRIO_BYPASS})"));
+            self.add_goto_rule(cidr, GOTO_TARGET_SYSTEM, PRIO_MUST_BYPASS).await?;
+            count += 1;
         }
 
+        // rules
         if is_whitelist {
             for cidr in rules_ips {
-                self.add_lookup_rule(cidr, table_id, PRIO_PROXY).await?;
-            }
-            let n = rules_ips.len();
-            if n > 0 {
-                Logger::info(&format!("已注入 {n} 条白名单代理规则 (prio {PRIO_PROXY})"));
+                self.add_lookup_rule(cidr, table_id, PRIO_RULES_IPS).await?;
+                count += 1;
             }
         } else {
             for cidr in rules_ips {
-                self.add_goto_rule(cidr, GOTO_TARGET, PRIO_LIST).await?;
+                self.add_goto_rule(cidr, GOTO_TARGET_SYSTEM, PRIO_RULES_IPS).await?;
+                count += 1;
             }
-            let n = rules_ips.len();
-            if n > 0 {
-                Logger::info(&format!("已注入 {n} 条黑名单直连规则 (prio {PRIO_LIST})"));
-            }
-
-            self.add_fwmark_rule(fwmark, fwmask, table_id, PRIO_FWMARK)
-                .await?;
-            Logger::info(&format!(
-                "已注入 fwmark 规则 0x{fwmark:x}/0x{fwmask:x} (prio {PRIO_FWMARK})"
-            ));
+            
+            // catch-all
+            self.add_catch_all_rule(table_id, PRIO_DEFAULT_PROXY).await?;
+            count += 2; // v4 + v6
         }
 
+        Logger::info(&format!("注入了 {} 条规则", count));
         Ok(())
     }
 
     pub async fn cleanup_rules(&self) -> io::Result<()> {
-        Logger::info("正在清理路由规则");
-
-        const OUR_PRIOS: &[u32] = &[11500, 30500, 30600, 30700, 30999];
+        Logger::info("正在清理路由规则...");
+        const OUR_PRIOS: &[u32] = &[12500, 12600, 14100, 14200, 14300];
         let mut deleted = 0u32;
 
         for ip_ver in [IpVersion::V4, IpVersion::V6] {
@@ -255,7 +215,7 @@ impl RoutingManager {
         }
 
         if deleted > 0 {
-            Logger::info(&format!("已清理 {deleted} 条路由规则"));
+            Logger::info(&format!("删除了 {} 条路由规则", deleted));
         }
         Ok(())
     }
@@ -263,15 +223,8 @@ impl RoutingManager {
 
 fn set_rule_dst(req: &mut rtnetlink::RuleAddRequest, cidr: &IpNet) {
     let addr = cidr.addr();
-    req.message_mut()
-        .attributes
-        .push(RuleAttribute::Destination(addr));
-    req.message_mut().header.family = if addr.is_ipv4() {
-        AddressFamily::Inet
-    } else {
-        AddressFamily::Inet6
-    };
+    req.message_mut().attributes.push(RuleAttribute::Destination(addr));
+    req.message_mut().header.family = if addr.is_ipv4() { AddressFamily::Inet } else { AddressFamily::Inet6 };
     req.message_mut().header.dst_len = cidr.prefix_len();
     req.message_mut().header.table = 0;
 }
-
