@@ -33,7 +33,7 @@ fn main() {
                 } else {
                     println!("- [!] 检测到已存在的信道文件，但守护进程未响应。");
                     println!("- [i] 这可能意味着守护进程正在启动。");
-                    rt.block_on(crate::ipc::client::countdown(10));
+                    rt.block_on(crate::ipc::client::block_1h());
                 }
             } else {
                 {

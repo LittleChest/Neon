@@ -150,7 +150,7 @@ impl RoutingManager {
         const PRIO_MUST_BYPASS: u32 = 14100;
         const PRIO_RULES_IPS: u32 = 14200;
         const PRIO_DEFAULT_PROXY: u32 = 14300;
-        const GOTO_TARGET_SYSTEM: u32 = 15000;
+        const GOTO_TARGET_SYSTEM: u32 = 15040;
 
         // Bypass VPN
         self.add_fwmark_goto_rule(bypass_mark, 0xffffffff, PRIO_HOPPING_JUMP, GOTO_TARGET_SYSTEM).await?;

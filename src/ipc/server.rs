@@ -64,7 +64,7 @@ pub async fn handle_next(
         }
         "disable" => (IpcResult::DeinitRequested, Some(writer)),
         "action" => {
-            let result = handle_action(&mut writer, iface_name, config_path, running_config, pre_disable, current_endpoint, refresh_sec).await;
+            let result = handle_action(&mut writer, &mut lines, iface_name, config_path, running_config, pre_disable, current_endpoint, refresh_sec).await;
             match result {
                 IpcResult::DeinitRequested => (result, Some(writer)),
                 _ => (result, None),
@@ -79,6 +79,7 @@ pub async fn handle_next(
 
 async fn handle_action(
     writer: &mut tokio::net::unix::OwnedWriteHalf,
+    lines: &mut tokio::io::Lines<tokio::io::BufReader<tokio::net::unix::OwnedReadHalf>>,
     iface_name: &str,
     config_path: &str,
     running_config: &Config,
@@ -111,8 +112,9 @@ async fn handle_action(
     let _ = writer
         .write_all("- [!] 未发现配置文件变更。\nWAIT\n".as_bytes())
         .await;
+    let _ = writer.flush().await;
 
-    let _ = writer.shutdown().await;
+    while let Ok(Some(_)) = lines.next_line().await {}
 
     IpcResult::ActionCompleted
 }
@@ -131,7 +133,19 @@ async fn show_unread_logs() -> String {
     };
 
     let mut output = String::new();
-    let last_chunk = match content.rfind("---") {
+
+    let mut last_idx = None;
+    for (idx, _) in content.match_indices("---") {
+        let before = &content[..idx];
+        let after = &content[idx + 3..];
+        let is_start_of_line = before.is_empty() || before.ends_with('\n');
+        let is_end_of_line = after.is_empty() || after.starts_with('\n') || after.starts_with('\r');
+        if is_start_of_line && is_end_of_line {
+            last_idx = Some(idx);
+        }
+    }
+
+    let last_chunk = match last_idx {
         Some(idx) => &content[idx + 3..],
         None => &content,
     };
@@ -139,7 +153,7 @@ async fn show_unread_logs() -> String {
     let mut has_unread = false;
     for line in last_chunk.lines() {
         let line = line.trim();
-        if line.is_empty() || line == "---" { continue; }
+        if line.is_empty() || line == "---" || line.starts_with("--- START_") { continue; }
         
         has_unread = true;
         
