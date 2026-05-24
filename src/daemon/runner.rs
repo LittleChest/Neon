@@ -10,7 +10,7 @@ use crate::sys::wg::WgManager;
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixListener;
 use tokio::time;
 use wireguard_control::InterfaceName;
@@ -42,6 +42,15 @@ pub struct DaemonState {
 }
 
 pub async fn run_daemon(config_path: &str) {
+    let config = Config::load_and_verify(config_path).await.unwrap_or_default();
+    let prop_path = Path::new("/data/adb/modules/WARP/module.prop");
+
+    if config.info.allow_mount {
+        let module_dir = Path::new("/data/adb/modules/WARP");
+        let tmp_dir = Path::new("/dev/warp");
+        let _ = MountManager::setup_magisk_env(module_dir, &[tmp_dir]).await;
+    }
+
     Logger::init(crate::LOG_FILE);
     let disable_path = Path::new("/data/adb/modules/WARP/disable");
 
@@ -66,15 +75,19 @@ pub async fn run_daemon(config_path: &str) {
             tokio::select! {
                 Some(_) = notify_stream.next() => {}
                 Ok((mut stream, _)) = ipc_listener.accept() => {
-                    let _ = stream.write_all(b"PONG").await;
+                    let mut buf = [0u8; 32];
+                    if let Ok(n) = stream.read(&mut buf).await {
+                        let msg = String::from_utf8_lossy(&buf[..n]);
+                        if msg.trim() == "ping" {
+                            let _ = stream.write_all(b"PONG\n").await;
+                        }
+                    }
                 }
             }
             continue;
         }
 
         Logger::info("载入中...");
-        let config = Config::load_and_verify(config_path).await.unwrap_or_default();
-        let prop_path = Path::new("/data/adb/modules/WARP/module.prop");
         
         UiRenderer::update_prop_status(prop_path, "✅ 正在启用 | ", config.info.allow_mount).await;
 
@@ -92,9 +105,6 @@ pub async fn run_daemon(config_path: &str) {
                     let _ = tokio::fs::remove_file(dummy).await;
                     let _ = tokio::fs::symlink("/dev/null/114514", dummy).await;
                     let _ = MountManager::mount_bind(dummy, disable);
-
-                    let update = Path::new("/data/adb/modules/WARP/update");
-                    let _ = tokio::fs::write(update, "").await;
                 }
                 return;
             }
@@ -106,7 +116,13 @@ pub async fn run_daemon(config_path: &str) {
                         if disable_path.exists() { break; }
                     }
                     Ok((mut stream, _)) = ipc_listener.accept() => {
-                        let _ = stream.write_all(b"PONG").await;
+                        let mut buf = [0u8; 32];
+                        if let Ok(n) = stream.read(&mut buf).await {
+                            let msg = String::from_utf8_lossy(&buf[..n]);
+                            if msg.trim() == "ping" {
+                                let _ = stream.write_all(b"PONG\n").await;
+                            }
+                        }
                     }
                 }
             }
@@ -116,11 +132,6 @@ pub async fn run_daemon(config_path: &str) {
 
 pub async fn init(config: Config) -> Option<DaemonState> {
     let module_dir = Path::new("/data/adb/modules/WARP");
-    let tmp_dir = Path::new("/dev/warp");
-    
-    if config.info.allow_mount {
-        MountManager::setup_magisk_env(module_dir, &[tmp_dir]).await.ok()?;
-    }
 
     let pool = build_endpoint_pool();
     
@@ -274,7 +285,20 @@ pub async fn run_loop(
             }
 
             Ok((mut stream, _)) = ipc_listener.accept() => {
-                let _ = stream.write_all(b"PONG").await;
+                let mut buf = [0u8; 32];
+                if let Ok(n) = stream.read(&mut buf).await {
+                    let msg = String::from_utf8_lossy(&buf[..n]);
+                    match msg.trim() {
+                        "ping" => {
+                            let _ = stream.write_all(b"PONG\n").await;
+                        }
+                        "mark_read" => {
+                            Logger::reset_counters();
+                            let _ = stream.write_all(b"OK\n").await;
+                        }
+                        _ => {}
+                    }
+                }
             }
 
             _ = hopping_tick.tick() => {

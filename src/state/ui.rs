@@ -61,11 +61,20 @@ impl UiRenderer {
                 "🌐 传输: [↑{} ↓{}] | 🤝 上次握手: {} | ⚡ 端点: {}",
                 tx_str, rx_str, hs_str, current_endpoint
             );
-            if state.error_count > 0 {
-                base.push_str(&format!(" | ❌ {} 个错误，{} 个警告", state.error_count, state.warning_count));
-            } else if state.warning_count > 0 {
-                base.push_str(&format!(" | ⚠️ {} 个警告", state.warning_count));
+
+            match (state.error_count, state.warning_count) {
+                (err, warn) if err > 0 && warn > 0 => {
+                    base.push_str(&format!(" | ❌ {} 个错误，⚠️ {} 个警告", err, warn));
+                }
+                (err, 0) if err > 0 => {
+                    base.push_str(&format!(" | ❌ {} 个错误", err));
+                }
+                (0, warn) if warn > 0 => {
+                    base.push_str(&format!(" | ⚠️ {} 个警告", warn));
+                }
+                _ => {}
             }
+            
             base
         });
 
