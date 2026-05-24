@@ -105,13 +105,6 @@ pub async fn run_daemon(config_path: &str) {
 }
 
 pub async fn init(config: Config) -> Option<DaemonState> {
-    let sock_exists = std::path::Path::new(SOCKET_PATH).exists();
-
-    if sock_exists {
-        println!("- [!] 守护进程已运行。");
-        return None;
-    }
-
     let pool = build_endpoint_pool();
     let dev_prop_path = Path::new("/dev/warp/module.prop");
     
