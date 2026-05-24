@@ -29,7 +29,13 @@ pub async fn run_action(config_path: &str) {
         return;
     }
 
-    let sock_exists = std::path::Path::new(SOCKET_PATH).exists();
+    let mut sock_exists = std::path::Path::new(SOCKET_PATH).exists();
+
+    if sock_exists && !check_liveness().await {
+        let _ = tokio::fs::remove_file(SOCKET_PATH).await;
+        sock_exists = false;
+    }
+
     if !sock_exists {
         println!("- [i] 正在启动守护进程...");
 
@@ -72,15 +78,22 @@ pub async fn run_action(config_path: &str) {
             }
             _ => {
                 let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+                let fatal_flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
                 let log_path_str = crate::LOG_FILE.to_string();
                 let done_clone = done.clone();
+                let fatal_clone = fatal_flag.clone();
                 
                 let tail_handle = tokio::spawn(async move {
-                    tail_log(log_path_str, done_clone).await;
+                    tail_log(log_path_str, done_clone, fatal_clone).await;
                 });
 
                 let mut waited = 0u64;
                 let connected = loop {
+                    if fatal_flag.load(std::sync::atomic::Ordering::Relaxed) {
+                        tokio::time::sleep(Duration::from_millis(100)).await;
+                        break false;
+                    }
+                    
                     let path_created = std::path::Path::new(SOCKET_PATH).exists();
                     if path_created && check_liveness().await {
                         break true;
@@ -96,10 +109,16 @@ pub async fn run_action(config_path: &str) {
                 let _ = tail_handle.await;
 
                 if !connected {
-                    println!("- [!] 守护进程启动超时。");
+                    if fatal_flag.load(std::sync::atomic::Ordering::Relaxed) {
+                        println!("- [!] 发生致命错误。");
+                        return;
+                    } else {
+                        println!("- [!] 守护进程启动超时。");
+                    }
                 } else {
                     println!("- [i] 守护进程已成功启动！");
                 }
+                
                 if config.info.await_on_action { block_1h().await; }
                 return;
             }
@@ -109,6 +128,10 @@ pub async fn run_action(config_path: &str) {
     let is_alive = check_liveness().await;
     if !is_alive {
         println!("- [!] 守护进程未响应。");
+        let logs_text = read_logs_for_action().await;
+        if !logs_text.is_empty() {
+            println!("{}", logs_text);
+        }
         if config.info.await_on_action { block_1h().await; }
         return;
     }
@@ -153,7 +176,11 @@ pub async fn block_1h() {
     tokio::time::sleep(Duration::from_secs(3600)).await;
 }
 
-async fn tail_log(path: String, done: std::sync::Arc<std::sync::atomic::AtomicBool>) {
+async fn tail_log(
+    path: String, 
+    done: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    fatal_flag: std::sync::Arc<std::sync::atomic::AtomicBool>
+) {
     let mut printed_chars = 0;
     loop {
         let is_done = done.load(std::sync::atomic::Ordering::Relaxed);
@@ -164,6 +191,9 @@ async fn tail_log(path: String, done: std::sync::Arc<std::sync::atomic::AtomicBo
                     let line_trimmed = line.trim();
                     if line_trimmed != "---" && !line_trimmed.is_empty() {
                         println!("{line}");
+                        if line_trimmed.starts_with("⛔") {
+                            fatal_flag.store(true, std::sync::atomic::Ordering::Relaxed);
+                        }
                     }
                 }
                 let _ = std::io::stdout().flush();

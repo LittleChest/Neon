@@ -43,16 +43,16 @@ pub struct DaemonState {
 
 pub async fn run_daemon(config_path: &str) {
     let config = Config::load_and_verify(config_path).await.unwrap_or_default();
-    let prop_path = Path::new("/data/adb/modules/WARP/module.prop");
+    let module_dir = Path::new("/data/adb/modules/WARP");
+    let tmp_dir = Path::new("/dev/warp");
+    let dev_prop_path = Path::new("/dev/warp/module.prop");
+    let disable_path = Path::new("/data/adb/modules/WARP/disable");
 
     if config.info.allow_mount {
-        let module_dir = Path::new("/data/adb/modules/WARP");
-        let tmp_dir = Path::new("/dev/warp");
         let _ = MountManager::setup_magisk_env(module_dir, &[tmp_dir]).await;
     }
 
     Logger::init(crate::LOG_FILE);
-    let disable_path = Path::new("/data/adb/modules/WARP/disable");
 
     let inotify = Inotify::init().expect("Failed to init inotify");
     inotify.watches().add("/data/adb/modules/WARP", WatchMask::CREATE | WatchMask::DELETE).expect("Failed to add watch");
@@ -89,51 +89,24 @@ pub async fn run_daemon(config_path: &str) {
 
         Logger::info("载入中...");
         
-        UiRenderer::update_prop_status(prop_path, "✅ 正在启用 | ", config.info.allow_mount).await;
+        if config.info.allow_mount {
+            UiRenderer::update_prop_status(dev_prop_path, "✅ 正在启用 | ", config.info.allow_mount).await;
+        }
 
         if let Some(mut state) = init(config.clone()).await {
             run_loop(&mut state, disable_path, &ipc_listener, &mut notify_stream).await;
             deinit(&state).await;
         } else {
-            if let Some(fatal_msg) = Logger::read_state(|s| s.fatal.clone()) {
-                UiRenderer::update_prop_status(prop_path, &format!("🚫 {} | ", fatal_msg), config.info.allow_mount).await;
-                
-                if config.info.allow_mount {
-                    let disable = Path::new("/data/adb/modules/WARP/disable");
-                    let _ = tokio::fs::write(disable, "").await;
-                    let dummy = Path::new("/dev/warp/daemon_deadlink");
-                    let _ = tokio::fs::remove_file(dummy).await;
-                    let _ = tokio::fs::symlink("/dev/null/114514", dummy).await;
-                    let _ = MountManager::mount_bind(dummy, disable);
-                }
-                return;
-            }
-
-            Logger::error("初始化失败，等待重新启用...");
-            loop {
-                tokio::select! {
-                    Some(_) = notify_stream.next() => {
-                        if disable_path.exists() { break; }
-                    }
-                    Ok((mut stream, _)) = ipc_listener.accept() => {
-                        let mut buf = [0u8; 32];
-                        if let Ok(n) = stream.read(&mut buf).await {
-                            let msg = String::from_utf8_lossy(&buf[..n]);
-                            if msg.trim() == "ping" {
-                                let _ = stream.write_all(b"PONG\n").await;
-                            }
-                        }
-                    }
-                }
-            }
+            Logger::error("初始化失败，执行紧急清理并退出守护进程...");
+            emergency_cleanup(module_dir, &config).await;
+            return;
         }
     }
 }
 
 pub async fn init(config: Config) -> Option<DaemonState> {
-    let module_dir = Path::new("/data/adb/modules/WARP");
-
     let pool = build_endpoint_pool();
+    let dev_prop_path = Path::new("/dev/warp/module.prop");
     
     let pk = match decode_b64_key(&config.interface.private_key) {
         Ok(k) => k,
@@ -222,7 +195,6 @@ pub async fn init(config: Config) -> Option<DaemonState> {
         return None;
     }
 
-    let prop_path = module_dir.join("module.prop");
     Logger::info("正在启动守护进程");
 
     Some(DaemonState {
@@ -232,7 +204,7 @@ pub async fn init(config: Config) -> Option<DaemonState> {
         pool,
         current_endpoint: first_ep,
         hopping,
-        prop_path,
+        prop_path: dev_prop_path.to_path_buf(),
         action_sh_visible: true,
     })
 }
@@ -384,6 +356,26 @@ async fn deinit(state: &DaemonState) {
     }
 
     Logger::info("服务已停止");
+}
+
+async fn emergency_cleanup(module_dir: &Path, config: &Config) {
+    if config.info.allow_mount {
+        let _ = MountManager::cleanup_magisk_env(module_dir).await;
+    }
+    if let Ok((rt_mgr, rt_conn)) = RoutingManager::new() {
+        tokio::spawn(rt_conn);
+        let _ = rt_mgr.cleanup_rules().await;
+    }
+    if let Ok((if_mgr, if_conn)) = InterfaceManager::new() {
+        tokio::spawn(if_conn);
+        for i in 0..100 {
+            let name = if i == 0 { "warp".to_string() } else { format!("warp{}", i - 1) };
+            if let Ok(index) = if_mgr.get_index(&name).await {
+                let _ = if_mgr.delete(index).await;
+            }
+        }
+    }
+    let _ = tokio::fs::remove_file(crate::ipc::SOCKET_PATH).await;
 }
 
 fn build_endpoint_pool() -> Vec<SocketAddr> {
