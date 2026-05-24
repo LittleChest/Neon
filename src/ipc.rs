@@ -29,12 +29,7 @@ pub async fn run_action(config_path: &str) {
         return;
     }
 
-    let mut sock_exists = std::path::Path::new(SOCKET_PATH).exists();
-
-    if sock_exists && !check_liveness().await {
-        let _ = tokio::fs::remove_file(SOCKET_PATH).await;
-        sock_exists = false;
-    }
+    let sock_exists = std::path::Path::new(SOCKET_PATH).exists();
 
     if !sock_exists {
         println!("- [!] 守护进程未启动。");
