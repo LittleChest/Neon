@@ -33,6 +33,7 @@ pub async fn run_action(config_path: &str) {
 
     if !sock_exists {
         println!("- [!] 守护进程未启动。");
+        if config.info.await_on_action { block_1h().await; }
         return;
     }
 
