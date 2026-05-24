@@ -22,7 +22,7 @@ fn main() {
         }
 
         Some("action") => {
-            let config_path = args.get(2).map(|s| s.as_str()).unwrap_or("/data/adb/warp/config.toml");
+            let config_path = "/data/adb/warp/config.toml";
             let rt = tokio::runtime::Builder::new_current_thread()
                 .enable_all().build().expect("无法初始化运行时");
             rt.block_on(async {
@@ -60,7 +60,7 @@ fn main() {
         }
 
         _ => {
-            let config_path = args.get(1).map(|s| s.as_str()).unwrap_or("/data/adb/warp/config.toml");
+            let config_path = "/data/adb/warp/config.toml";
             let rt = tokio::runtime::Builder::new_current_thread()
                 .enable_all().build().expect("tokio 运行时失败");
             rt.block_on(async {
