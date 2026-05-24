@@ -38,7 +38,6 @@ pub struct HoppingConfig {
 pub struct InfoConfig {
     pub allow_mount: bool,
     pub refresh_sec: u64,
-    pub show_on_action: bool,
     pub await_on_action: bool,
 }
 
@@ -80,7 +79,7 @@ impl Default for HoppingConfig {
 
 impl Default for InfoConfig {
     fn default() -> Self {
-        Self { allow_mount: true, refresh_sec: 60, show_on_action: true, await_on_action: true }
+        Self { allow_mount: true, refresh_sec: 60, await_on_action: true }
     }
 }
 

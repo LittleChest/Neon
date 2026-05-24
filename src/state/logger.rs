@@ -40,11 +40,6 @@ impl Logger {
         f(&Self::inner().state.read().unwrap())
     }
 
-    pub fn has_warnings_or_errors() -> bool {
-        let state = Self::inner().state.read().unwrap();
-        state.error_count > 0 || state.warning_count > 0 || state.fatal.is_some()
-    }
-
     pub fn reset_counters() {
         let mut state = Self::inner().state.write().unwrap();
         state.error_count = 0;

@@ -22,12 +22,6 @@ pub async fn run_action(config_path: &str) {
     let config = Config::load_and_verify(config_path).await.unwrap_or_default();
     let logs_text = read_logs_for_action().await;
     let has_warnings = !logs_text.is_empty();
-    
-    let hide_action = !config.info.show_on_action && !has_warnings;
-    
-    if !config.info.allow_mount && hide_action {
-        return;
-    }
 
     let sock_exists = std::path::Path::new(SOCKET_PATH).exists();
 
@@ -75,6 +69,7 @@ pub async fn run_action(config_path: &str) {
     if let Ok(mut stream) = UnixStream::connect(SOCKET_PATH).await {
         use tokio::io::AsyncWriteExt;
         let _ = stream.write_all(b"mark_read\n").await;
+        let _ = stream.write_all(b"refresh_action_sh\n").await;
     }
 
     if config.info.await_on_action {

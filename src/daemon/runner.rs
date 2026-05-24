@@ -38,7 +38,6 @@ pub struct DaemonState {
     pub current_endpoint: SocketAddr,
     pub hopping: std::sync::Arc<HoppingEngine>,
     pub prop_path: PathBuf,
-    pub action_sh_visible: bool,
 }
 
 pub async fn run_daemon(config_path: &str) {
@@ -205,7 +204,6 @@ pub async fn init(config: Config) -> Option<DaemonState> {
         current_endpoint: first_ep,
         hopping,
         prop_path: dev_prop_path.to_path_buf(),
-        action_sh_visible: true,
     })
 }
 
@@ -227,24 +225,6 @@ pub async fn run_loop(
             Some(_) = notify_stream.next() => {
                 if disable_path.exists() {
                     break;
-                }
-                
-                if state.config.info.allow_mount {
-                    let show = state.config.info.show_on_action || Logger::has_warnings_or_errors();
-                    if show != state.action_sh_visible {
-                        let action_path = Path::new("/data/adb/modules/WARP/action.sh");
-                        if action_path.exists() {
-                            if show {
-                                let _ = MountManager::unmount_path(action_path);
-                            } else {
-                                let dummy = Path::new("/dev/warp/loop_deadlink");
-                                let _ = tokio::fs::remove_file(dummy).await;
-                                let _ = tokio::fs::symlink("/dev/null/114514", dummy).await;
-                                let _ = MountManager::mount_bind(dummy, action_path);
-                            }
-                        }
-                        state.action_sh_visible = show;
-                    }
                 }
             }
 

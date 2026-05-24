@@ -83,8 +83,6 @@ impl MountManager {
     pub async fn cleanup_magisk_env(module_dir: &Path) -> io::Result<()> {
         let real_prop = module_dir.join("module.prop");
         let _ = Self::unmount_path(&real_prop);
-        let action_sh = module_dir.join("action.sh");
-        let _ = Self::unmount_path(&action_sh);
         Ok(())
     }
 }
