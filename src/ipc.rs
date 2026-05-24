@@ -24,14 +24,6 @@ pub async fn run_action(config_path: &str) {
     let has_warnings = !logs_text.is_empty();
 
     let sock_exists = std::path::Path::new(SOCKET_PATH).exists();
-    let is_alive = if sock_exists { check_liveness().await } else { false };
-
-    if !is_alive {
-        println!("- [!] 守护进程未响应。");
-        if !logs_text.is_empty() {
-            println!("{}", logs_text);
-        }
-    }
 
     if !sock_exists {
         println!("- [i] 正在启动守护进程...");
@@ -102,14 +94,16 @@ pub async fn run_action(config_path: &str) {
         let _ = writeln!(f, "\n---");
     }
 
-    if let Ok(mut stream) = UnixStream::connect(SOCKET_PATH).await {
+    if check_liveness().await && let Ok(mut stream) = UnixStream::connect(SOCKET_PATH).await {
         use tokio::io::AsyncWriteExt;
         let _ = stream.write_all(b"mark_read\n").await;
         let _ = stream.write_all(b"refresh_action_sh\n").await;
+    } else {
+        println!("- [!] 守护进程未响应。");
     }
 
     if config.info.await_on_action {
-        println!("\n- [!] 将于 5 秒后自动关闭");
+        println!("\n- [i] 将于 5 秒后自动关闭");
         tokio::time::sleep(Duration::from_secs(5)).await;
     }
 }
@@ -203,7 +197,7 @@ fn generate_stats_text(iface_name: &str, device: &Device, refresh_sec: u64) -> S
     let endpoint = peer.config.endpoint.map(|e| e.to_string()).unwrap_or_else(|| "未知".to_string());
 
     format!(
-        "\n  📊 WARP 状态\n  ──────────────\n  状态: {status}\n  上传: {tx}\n  下载: {rx}\n  上次握手: {hs_str}\n  当前端点: {endpoint}\n  接口: {iface_name}\n  监听端口: {listen_port}\n  保持连接: {keepalive}\n  允许IP: {allowed_str}\n  跳跃间隔: {refresh_sec} 秒\n  ──────────────\n\n",
+        "\n  📊 WARP 状态\n  ──────────────\n  状态: {status}\n  上传: {tx}\n  下载: {rx}\n  上次握手: {hs_str}\n  当前端点: {endpoint}\n  接口: {iface_name}\n  监听端口: {listen_port}\n  保持连接: {keepalive}\n  允许IP: {allowed_str}\n  跳跃间隔: {refresh_sec} 秒\n  ──────────────\n",
     )
 }
 
