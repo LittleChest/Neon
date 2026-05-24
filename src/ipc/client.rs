@@ -1,5 +1,6 @@
 use crate::ipc::server::SOCKET_PATH;
 use std::io;
+use std::io::Write;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -17,7 +18,7 @@ pub async fn run_start() {
             countdown(10).await;
         }
         Err(e) => {
-            eprintln!("- [!] 启动失败: {e}");
+            println!("- [!] 启动失败: {e}");
             countdown(10).await;
         }
     }
@@ -56,7 +57,7 @@ async fn try_start(initial_pos: u64) -> io::Result<()> {
     }).await {
         Ok(_) => {},
         Err(_) => {
-            eprintln!("- [!] 守护进程无响应，请查看管理器日志。");
+            println!("- [!] 守护进程无响应，请查看管理器日志。");
         }
     }
     
@@ -74,7 +75,7 @@ pub async fn run_action() {
     match try_action(initial_pos).await {
         Ok(_) => {}
         Err(e) => {
-            eprintln!("- [!] 无法与守护进程通信: {e}");
+            println!("- [!] 无法与守护进程通信: {e}");
             countdown(10).await;
         }
     }
@@ -89,7 +90,7 @@ async fn try_action(initial_pos: u64) -> io::Result<()> {
     while let Ok(Some(line)) = lines.next_line().await {
         match line.as_str() {
             "WAIT" => {
-                println!("- [i] 再次点按以停用，或等待自动关闭...");
+                println!("- [i] 想要停用服务吗？请再次点按动作执行。");
                 countdown(10).await;
                 break;
             }
@@ -103,7 +104,8 @@ async fn try_action(initial_pos: u64) -> io::Result<()> {
                 }
                 done.store(true, Ordering::Relaxed);
                 let _ = tail.await;
-                countdown(10).await;
+                println!("\n- [i] 服务已停用。");
+                countdown(3).await;
                 break;
             }
             "DONE" => break,
@@ -121,8 +123,10 @@ pub async fn is_daemon_running() -> bool {
 
 pub async fn countdown(secs: u64) {
     let mut remaining = secs;
+    println!();
     while remaining > 0 {
-        eprintln!("\n- [i] 将在 {remaining} 秒后关闭...");
+        print!("\r- [i] 窗口将在 {} 秒后自动关闭...   ", remaining);
+        let _ = std::io::stdout().flush();
         tokio::time::sleep(Duration::from_secs(1)).await;
         remaining -= 1;
     }
@@ -142,7 +146,7 @@ async fn tail_log(path: String, done: Arc<AtomicBool>, mut pos: u64) {
                     line.clear();
                 }
             }
-            let _ = std::io::Write::flush(&mut std::io::stdout());
+            let _ = std::io::stdout().flush();
             break;
         }
         match tokio::fs::File::open(&path).await {
@@ -156,7 +160,7 @@ async fn tail_log(path: String, done: Arc<AtomicBool>, mut pos: u64) {
                     }
                     line.clear();
                 }
-                let _ = std::io::Write::flush(&mut std::io::stdout());
+                let _ = std::io::stdout().flush();
                 pos = reader.stream_position().await.unwrap_or(pos);
             }
             Err(ref e) if e.kind() == io::ErrorKind::NotFound => {}

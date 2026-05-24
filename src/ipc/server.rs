@@ -109,7 +109,7 @@ async fn handle_action(
     let _ = writer.write_all(logs_text.as_bytes()).await;
     let _ = writer.write_all(stats_text.as_bytes()).await;
     let _ = writer
-        .write_all("- [!] 未发现配置文件变更。\n\n- [i] 想要停用服务吗？请在关闭此窗口后的 5 秒内再次点按。\nWAIT\n".as_bytes())
+        .write_all("- [!] 未发现配置文件变更。\nWAIT\n".as_bytes())
         .await;
 
     let _ = writer.shutdown().await;
