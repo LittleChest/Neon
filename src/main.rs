@@ -31,8 +31,8 @@ fn main() {
                 if daemon_running {
                     rt.block_on(crate::ipc::client::run_action());
                 } else {
-                    eprintln!("- [!] 检测到已存在的信道文件，但守护进程未响应。");
-                    eprintln!("- [i] 这可能意味着守护进程正在启动。");
+                    println!("- [!] 检测到已存在的信道文件，但守护进程未响应。");
+                    println!("- [i] 这可能意味着守护进程正在启动。");
                     rt.block_on(crate::ipc::client::countdown(10));
                 }
             } else {
@@ -48,7 +48,7 @@ fn main() {
 
                 match unsafe { libc::fork() } {
                     -1 => {
-                        eprintln!("- [!] fork 失败");
+                        println!("- [!] fork 失败");
                     }
                     0 => {
                         unsafe { libc::setsid(); }

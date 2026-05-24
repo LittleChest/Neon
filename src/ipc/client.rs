@@ -125,7 +125,7 @@ pub async fn countdown(secs: u64) {
     let mut remaining = secs;
     println!();
     while remaining > 0 {
-        print!("\r- [i] 窗口将在 {} 秒后自动关闭...   ", remaining);
+        print!("- [i] 窗口将在 {} 秒后自动关闭...   ", remaining);
         let _ = std::io::stdout().flush();
         tokio::time::sleep(Duration::from_secs(1)).await;
         remaining -= 1;
